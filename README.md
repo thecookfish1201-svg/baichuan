@@ -58,11 +58,13 @@
 
 ## 截图
 
-> 待补充（提交前请替换为真实截图）
-
-| 首页 | 聊天（微信式） | 聊天（DeepSeek 式） |
+| 消息首页 | 微信式聊天 | 智能体列表 |
 |---|---|---|
-| ![](docs/images/home.png) | ![](docs/images/chat-wechat.png) | ![](docs/images/chat-deepseek.png) |
+| ![](docs/images/home.jpg) | ![](docs/images/chat-wechat.jpg) | ![](docs/images/agent-list.jpg) |
+
+| 编辑智能体 | 发现（插件） | 我的（深色） |
+|---|---|---|
+| ![](docs/images/agent-edit.jpg) | ![](docs/images/discover.jpg) | ![](docs/images/profile-dark.jpg) |
 
 ## 安装
 
