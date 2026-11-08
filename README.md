@@ -58,13 +58,9 @@
 
 ## 截图
 
-| 消息首页 | 微信式聊天 | 智能体列表 |
+| 消息首页 | 微信式聊天 | 我的（深色） |
 |---|---|---|
-| ![](docs/images/home.jpg) | ![](docs/images/chat-wechat.jpg) | ![](docs/images/agent-list.jpg) |
-
-| 编辑智能体 | 发现（插件） | 我的（深色） |
-|---|---|---|
-| ![](docs/images/agent-edit.jpg) | ![](docs/images/discover.jpg) | ![](docs/images/profile-dark.jpg) |
+| ![](docs/images/home.jpg) | ![](docs/images/chat-wechat.jpg) | ![](docs/images/profile-dark.jpg) |
 
 ## 安装
 
