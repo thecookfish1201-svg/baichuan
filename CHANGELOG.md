@@ -4,9 +4,9 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
-## [0.1.0-alpha01] - 2026-11-08
+## [0.1.0] - 2026-11-08
 
-第一版交付。
+第一版测试版（Test Build）。
 
 ### 新增
 

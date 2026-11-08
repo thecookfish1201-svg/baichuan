@@ -1,4 +1,4 @@
-# 百川
+# 百川（暂定）
 
 > 开源、可扩展、支持用户自行配置模型 API 的 Android AI 对话客户端。
 
@@ -130,7 +130,7 @@ scripts/    构建脚本
 
 ## 许可证
 
-[Apache License 2.0](LICENSE)
+[MIT License](LICENSE)
 
 ## 免责声明
 
