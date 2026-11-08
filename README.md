@@ -76,7 +76,7 @@
 要求：JDK 17、Android SDK 35、Gradle 8.11。
 
 ```bash
-git clone <repo-url> baichuan
+git clone https://github.com/Thecookfish1201-svg/baichuan.git
 cd baichuan/app
 gradle assembleDebug
 ```
