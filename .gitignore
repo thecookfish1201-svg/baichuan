@@ -1,0 +1,34 @@
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+*.keystore
+!debug.keystore
+*.jks
+
+# Gradle
+.gradle/
+build/
+app/build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# 日志与临时文件
+*.log
+*.hprof
+*.tmp
+
+# 本机构建适配（aarch64 容器专用，不随源码分发）
+tools/aapt2/aapt2.real

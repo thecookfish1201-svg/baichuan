@@ -1,0 +1,6 @@
+#!/bin/sh
+# arm64 版 aapt2 包装：Google 官方 build-tools 只提供 linux-x86_64 的 aapt2，
+# 本机为 aarch64，此处使用 Termux 移植的 aapt2（2.20-android-16.0.0_r4），
+# 通过宿主的 bionic linker64 运行。
+export LD_LIBRARY_PATH=/opt/toolchain/termux-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+exec /opt/toolchain/aapt2/aapt2.real "$@"
