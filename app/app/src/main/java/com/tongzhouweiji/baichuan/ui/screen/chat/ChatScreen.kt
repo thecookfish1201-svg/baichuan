@@ -90,6 +90,7 @@ import kotlinx.coroutines.launch
 import com.tongzhouweiji.baichuan.R
 import com.tongzhouweiji.baichuan.chat.BranchInfo
 import com.tongzhouweiji.baichuan.chat.ChatViewModel
+import com.tongzhouweiji.baichuan.chat.ComposerState
 import com.tongzhouweiji.baichuan.chat.PendingAttachment
 import com.tongzhouweiji.baichuan.core.db.entity.AttachmentEntity
 import com.tongzhouweiji.baichuan.core.db.entity.MessageEntity
@@ -131,8 +132,21 @@ fun ChatScreen(
         if (uri != null) viewModel.addPendingAttachment(uri, "file")
     }
 
-    LaunchedEffect(state.activePath.size, state.streamingContent.length) {
+    // 仅当用户接近底部时跟随流式内容；上滑阅读时不打断。
+    val nearBottom by remember {
+        androidx.compose.runtime.derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            last == null || last.index >= info.totalItemsCount - 2
+        }
+    }
+    LaunchedEffect(state.activePath.size) {
         if (state.activePath.isNotEmpty()) {
+            listState.animateScrollToItem(state.activePath.lastIndex)
+        }
+    }
+    LaunchedEffect(state.streamingContent.length) {
+        if (nearBottom && state.activePath.isNotEmpty()) {
             listState.animateScrollToItem(state.activePath.lastIndex)
         }
     }
@@ -211,7 +225,7 @@ fun ChatScreen(
             ChatInputBar(
                 input = state.input,
                 pending = state.pendingAttachments,
-                isStreaming = state.isStreaming,
+                composerState = state.composerState,
                 deepSeekStyle = style == "deepseek",
                 onInputChange = viewModel::updateInput,
                 onSend = viewModel::send,
@@ -480,7 +494,7 @@ private fun AttachmentPreview(attachment: AttachmentEntity, store: AttachmentSto
 private fun ChatInputBar(
     input: String,
     pending: List<PendingAttachment>,
-    isStreaming: Boolean,
+    composerState: ComposerState,
     deepSeekStyle: Boolean,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
@@ -550,13 +564,18 @@ private fun ChatInputBar(
                     unfocusedIndicatorColor = Color.Transparent,
                 ),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { if (!isStreaming) onSend() }),
+                keyboardActions = KeyboardActions(
+                    onSend = { if (composerState != ComposerState.PREPARING) onSend() },
+                ),
             )
             Spacer(Modifier.width(6.dp))
-            if (isStreaming) {
-                TextButton(onClick = onStop) { Text("停止") }
+            if (composerState == ComposerState.STREAMING || composerState == ComposerState.STOP_REQUESTED) {
+                TextButton(onClick = onStop) {
+                    Text(if (composerState == ComposerState.STOP_REQUESTED) "正在停止…" else "停止")
+                }
             } else {
-                IconButton(onClick = onSend, enabled = input.isNotBlank() || pending.isNotEmpty()) {
+                val canSend = composerState != ComposerState.PREPARING
+                IconButton(onClick = onSend, enabled = canSend && (input.isNotBlank() || pending.isNotEmpty())) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
                         contentDescription = "发送",

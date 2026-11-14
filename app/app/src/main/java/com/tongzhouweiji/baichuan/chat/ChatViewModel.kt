@@ -58,6 +58,10 @@ data class PendingAttachment(
     val mime: String,
 )
 
+enum class ComposerState {
+    IDLE, PREPARING, STREAMING, STOP_REQUESTED, COMPLETED, FAILED, CANCELLED
+}
+
 data class ChatUiState(
     val agent: AgentEntity? = null,
     val conversationId: Long = 0,
@@ -77,6 +81,8 @@ data class ChatUiState(
     val sessionSearch: Boolean = false,
     /** 显式开启的 Agent 模式；未授权或未开启时走普通聊天。 */
     val agentMode: Boolean = false,
+    /** 输入区状态机：Idle / Preparing / Streaming / StopRequested / Completed / Failed / Cancelled。 */
+    val composerState: ComposerState = ComposerState.IDLE,
 )
 
 private data class GenerationParams(
@@ -182,7 +188,9 @@ class ChatViewModel(
         val conversationId = _state.value.conversationId
         if (conversationId == 0L) return
         viewModelScope.launch {
+            _state.update { it.copy(composerState = ComposerState.PREPARING) }
             val conversation = conversationDao.findById(conversationId) ?: run {
+                _state.update { it.copy(composerState = ComposerState.IDLE) }
                 _state.update { it.copy(globalError = "会话不存在，发送失败") }
                 return@launch
             }
@@ -211,6 +219,7 @@ class ChatViewModel(
                 return@launch
             }
             _state.update { it.copy(input = "", pendingAttachments = emptyList()) }
+            _state.update { it.copy(composerState = ComposerState.STREAMING) }
             generate(conversationId, userMessage.id)
         }
     }
@@ -270,6 +279,7 @@ class ChatViewModel(
     }
 
     fun stopGenerating() {
+        _state.update { it.copy(composerState = ComposerState.STOP_REQUESTED) }
         streamJob?.cancel()
         agentJob?.cancel()
     }
@@ -513,6 +523,7 @@ class ChatViewModel(
                             streamingReasoning = finalReasoning.orEmpty(),
                             isStreaming = false,
                             streamingMessageId = null,
+                            composerState = ComposerState.COMPLETED,
                         )
                     }
                 } else {
@@ -530,6 +541,7 @@ class ChatViewModel(
                             streamingReasoning = result.reasoning.orEmpty(),
                             isStreaming = false,
                             streamingMessageId = null,
+                            composerState = ComposerState.COMPLETED,
                         )
                     }
                 }
@@ -539,7 +551,13 @@ class ChatViewModel(
                     reasoning = reasoning.toString().ifBlank { null },
                     reasoningMs = reasoningMs(),
                 )
-                _state.update { it.copy(isStreaming = false, streamingMessageId = null) }
+                _state.update {
+                    it.copy(
+                        isStreaming = false,
+                        streamingMessageId = null,
+                        composerState = ComposerState.CANCELLED,
+                    )
+                }
                 throw e
             } catch (e: ModelException) {
                 Logger.w("stream failed: ${e.code} ${e.message}")
@@ -560,7 +578,12 @@ class ChatViewModel(
                     reasoningMs = reasoningMs(),
                 )
                 _state.update {
-                    it.copy(isStreaming = false, streamingMessageId = null, globalError = e.message)
+                    it.copy(
+                        isStreaming = false,
+                        streamingMessageId = null,
+                        globalError = e.message,
+                        composerState = ComposerState.FAILED,
+                    )
                 }
             } catch (e: Exception) {
                 Logger.e("stream unexpected", e)
@@ -570,7 +593,12 @@ class ChatViewModel(
                     reasoningMs = reasoningMs(),
                 )
                 _state.update {
-                    it.copy(isStreaming = false, streamingMessageId = null, globalError = "生成失败，请稍后重试")
+                    it.copy(
+                        isStreaming = false,
+                        streamingMessageId = null,
+                        globalError = "生成失败，请稍后重试",
+                        composerState = ComposerState.FAILED,
+                    )
                 }
             } finally {
                 withContext(NonCancellable) { refreshPath() }
@@ -589,11 +617,7 @@ class ChatViewModel(
     ) {
         val resolved = resolveModel(agent)
         if (resolved == null) {
-            // 传递当前分支的历史消息（不含本次 user 文本），让 Agent 拥有对话上下文。
-        val history = contextPath.dropLast(1)
-            .filter { it.role == "user" || it.role == "assistant" }
-            .map { com.tongzhouweiji.baichuan.model.ChatMessage(role = it.role, content = it.content) }
-        val placeholder = repository.appendAssistantPlaceholder(conversationId, contextPath.lastOrNull()?.id)
+            val placeholder = repository.appendAssistantPlaceholder(conversationId, contextPath.lastOrNull()?.id)
             repository.finishMessage(placeholder.id, "failed", "", "未配置模型，无法使用 Agent")
             refreshPath()
             return
