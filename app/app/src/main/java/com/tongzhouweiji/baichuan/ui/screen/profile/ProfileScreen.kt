@@ -31,6 +31,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -48,6 +53,22 @@ fun ProfileScreen(
     onOpenBackup: () -> Unit = {},
     onOpenAgentRuns: () -> Unit = {},
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val app = context.applicationContext as com.tongzhouweiji.baichuan.BaichuanApplication
+    var statusLine by remember { mutableStateOf("本地数据 · 未配置模型") }
+    LaunchedEffect(Unit) {
+        statusLine = runCatching {
+            val providers = app.container.providerDao.listAll().size
+            val defaultId = app.container.providerDao.defaultModel()?.id
+            val modelName = defaultId?.let { app.container.providerDao.findModelById(it)?.modelName }
+            buildString {
+                append("本地数据")
+                append(" · ")
+                append(modelName ?: "未配置模型")
+                if (providers > 0) append(" · ").append(providers).append(" 个服务商")
+            }
+        }.getOrDefault("本地数据 · 未配置模型")
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets(0),
@@ -67,7 +88,7 @@ fun ProfileScreen(
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState()),
         ) {
-            ProfileHeader()
+            ProfileHeader(statusLine)
             Spacer(Modifier.height(10.dp))
             ListRow(
                 icon = Icons.Default.Settings,
@@ -129,7 +150,7 @@ fun ProfileScreen(
 }
 
 @Composable
-private fun ProfileHeader() {
+private fun ProfileHeader(statusLine: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -157,7 +178,7 @@ private fun ProfileHeader() {
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = "本地数据 · 未配置模型",
+                text = statusLine,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp),
