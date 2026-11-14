@@ -51,6 +51,13 @@ class BackupManager(
         private const val MANIFEST = "manifest.json"
         private const val DIR_PREFIX = "baichuan-backup-"
 
+        private const val MAX_ENTRIES = 500
+        private const val MAX_ENTRY_BYTES = 32L * 1024 * 1024
+        private const val MAX_TOTAL_BYTES = 256L * 1024 * 1024
+        private val PATH_PATTERN = Regex("^(manifest\\.json|data/[a-z_]+\\.json|files/.+)$")
+        private val SHA_PATTERN = Regex("^[0-9a-f]{64}$")
+        private val ALL_CATEGORY_KEYS = setOf("chat", "agents", "memories", "settings", "attachments", "agent", "plugins", "mcp")
+
         val CATEGORIES = listOf(
             Category.CHAT, Category.AGENTS, Category.MEMORIES, Category.SETTINGS, Category.ATTACHMENTS,
         )
@@ -62,6 +69,9 @@ class BackupManager(
         MEMORIES("memories", "记忆"),
         SETTINGS("settings", "设置"),
         ATTACHMENTS("attachments", "附件文件"),
+        AGENT("agent", "Agent 授权与记录"),
+        PLUGINS("plugins", "插件"),
+        MCP("mcp", "MCP 连接"),
     }
 
     @Serializable
@@ -84,6 +94,15 @@ class BackupManager(
     )
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    private fun validatePath(path: String) {
+        require(path.isNotEmpty() && path.length <= 200) { "备份路径不合法：$path" }
+        require(!path.startsWith("/")) { "备份路径不合法：$path" }
+        require(!path.contains("..")) { "备份路径不能包含 ..：$path" }
+        require(!path.contains('\\')) { "备份路径不能包含反斜杠：$path" }
+        require(path.none { it.isISOControl() }) { "备份路径包含控制字符" }
+        require(PATH_PATTERN.matches(path)) { "备份包含不支持的路径：$path" }
+    }
 
     // ---------- 数据收集（ZIP 与文件夹共用） ----------
 
@@ -110,12 +129,28 @@ class BackupManager(
         if (Category.SETTINGS in categories) {
             entries["data/settings.json"] = encode(db.settingDao().listAll())
         }
+        if (Category.AGENT in categories) {
+            entries["data/agent_consents.json"] = encode(db.agentRunDao().listAllConsents())
+            entries["data/agent_runs.json"] = encode(db.agentRunDao().listAllRuns())
+            entries["data/agent_actions.json"] = encode(db.agentRunDao().listAllActions())
+        }
+        if (Category.PLUGINS in categories) {
+            entries["data/plugins.json"] = encode(db.pluginDao().listAll())
+            entries["data/plugin_permissions.json"] = encode(db.pluginPermissionDao().listAll())
+        }
+        if (Category.MCP in categories) {
+            entries["data/mcp_servers.json"] = encode(db.mcpDao().listAllServers())
+            entries["data/mcp_tools.json"] = encode(db.mcpDao().listAllTools())
+            entries["data/mcp_call_logs.json"] = encode(db.mcpDao().listAllLogs())
+        }
         if (Category.ATTACHMENTS in categories) {
+            val base = context.filesDir.canonicalFile
             db.attachmentDao().listAll().forEach { attachment ->
-                val file = File(context.filesDir, attachment.uri)
-                if (file.exists()) {
-                    entries["files/${attachment.uri}"] = file.readBytes()
+                val file = File(context.filesDir, attachment.uri).canonicalFile
+                require(file.path.startsWith(base.path + File.separator)) {
+                    "附件路径越界：${attachment.uri}"
                 }
+                if (file.exists()) entries["files/${attachment.uri}"] = file.readBytes()
             }
         }
         return entries
@@ -248,7 +283,17 @@ class BackupManager(
         if (manifest.formatVersion > FORMAT_VERSION) {
             throw IllegalArgumentException("备份格式版本过新（${manifest.formatVersion}），请升级应用")
         }
+        require(manifest.categories.all { it in ALL_CATEGORY_KEYS }) { "备份类别不合法" }
+        val declared = manifest.files.associateBy { it.path }
+        require(declared.size == manifest.files.size) { "备份清单存在重复路径" }
+        val actual = entries.keys - MANIFEST
+        require(declared.keys == actual) {
+            "备份文件与清单不一致（存在未声明或缺失的文件）"
+        }
         manifest.files.forEach { entry ->
+            validatePath(entry.path)
+            require(entry.size >= 0) { "备份文件大小不合法：${entry.path}" }
+            require(SHA_PATTERN.matches(entry.sha256)) { "备份哈希格式不合法：${entry.path}" }
             val bytes = entries[entry.path] ?: throw IllegalArgumentException("备份缺少文件：${entry.path}")
             if (bytes.size.toLong() != entry.size || sha256(bytes) != entry.sha256) {
                 throw IllegalArgumentException("备份文件校验失败：${entry.path}")
@@ -261,8 +306,11 @@ class BackupManager(
         manifest: BackupManifest,
     ): BackupInfo {
         val safety = File(context.cacheDir, "pre_restore_${System.currentTimeMillis()}.zip")
-        runCatching {
+        try {
             safety.writeBytes(snapshotToBytes())
+        } catch (e: Exception) {
+            Logger.e("恢复前快照创建失败，已中止导入", e)
+            throw IllegalStateException("无法创建恢复前快照，已取消导入（原始数据未改动）", e)
         }
 
         try {
@@ -296,7 +344,17 @@ class BackupManager(
                     db.conversationDao().clearAll()
                     entries["data/conversations.json"]?.let { db.conversationDao().insertAll(decodeList<ConversationEntity>(it)) }
                     entries["data/messages.json"]?.let { db.messageDao().insertAll(decodeList<MessageEntity>(it)) }
-                    entries["data/attachments.json"]?.let { db.attachmentDao().insertAll(decodeList<AttachmentEntity>(it)) }
+                    entries["data/attachments.json"]?.let { bytes ->
+                        val list = decodeList<AttachmentEntity>(bytes)
+                        val base = context.filesDir.canonicalFile
+                        list.forEach { attachment ->
+                            val target = File(context.filesDir, attachment.uri).canonicalFile
+                            require(target.path.startsWith(base.path + File.separator)) {
+                                "备份附件路径越界：${attachment.uri}"
+                            }
+                        }
+                        db.attachmentDao().insertAll(list)
+                    }
                     entries["data/summaries.json"]?.let { db.summaryDao().insertAll(decodeList<ConversationSummaryEntity>(it)) }
                     entries["data/error_events.json"]?.let { db.errorEventDao().insertAll(decodeList<ErrorEventEntity>(it)) }
                     entries["data/scheduled_messages.json"]?.let { db.scheduledMessageDao().insertAll(decodeList<ScheduledMessageEntity>(it)) }
@@ -320,11 +378,41 @@ class BackupManager(
                     db.settingDao().clearAll()
                     entries["data/settings.json"]?.let { db.settingDao().insertAll(decodeList<SettingEntity>(it)) }
                 }
+                if ("agent" in categories) {
+                    db.agentRunDao().clearAllActions()
+                    db.agentRunDao().clearAllRuns()
+                    db.agentRunDao().clearAllConsents()
+                    entries["data/agent_consents.json"]?.let { db.agentRunDao().insertAllConsents(decodeList(it)) }
+                    entries["data/agent_runs.json"]?.let { db.agentRunDao().insertAllRuns(decodeList(it)) }
+                    entries["data/agent_actions.json"]?.let { db.agentRunDao().insertAllActions(decodeList(it)) }
+                }
+                if ("plugins" in categories) {
+                    db.pluginPermissionDao().clearAll()
+                    db.pluginDao().clearAll()
+                    entries["data/plugins.json"]?.let { db.pluginDao().insertAll(decodeList(it)) }
+                    entries["data/plugin_permissions.json"]?.let {
+                        db.pluginPermissionDao().insertAll(decodeList(it))
+                    }
+                }
+                if ("mcp" in categories) {
+                    db.mcpDao().clearAllTools()
+                    db.mcpDao().clearAllLogs()
+                    db.mcpDao().clearServers()
+                    entries["data/mcp_servers.json"]?.let { db.mcpDao().insertServers(decodeList(it)) }
+                    entries["data/mcp_tools.json"]?.let { db.mcpDao().insertAllTools(decodeList(it)) }
+                    entries["data/mcp_call_logs.json"]?.let { db.mcpDao().insertAllLogs(decodeList(it)) }
+                }
             }
             if ("attachments" in categories) {
+                val base = context.filesDir.canonicalFile
                 entries.keys.filter { it.startsWith("files/") }.forEach { path ->
                     val relative = path.removePrefix("files/")
+                    validatePath(relative)
                     val target = File(context.filesDir, relative)
+                    val canonical = target.canonicalFile
+                    require(canonical.path.startsWith(base.path + File.separator)) {
+                        "附件路径越界：$relative"
+                    }
                     target.parentFile?.mkdirs()
                     entries[path]?.let { target.writeBytes(it) }
                 }
@@ -335,7 +423,7 @@ class BackupManager(
     }
 
     private suspend fun snapshotToBytes(): ByteArray {
-        val entries = mapOf(
+        val entries = mutableMapOf(
             "data/agents.json" to encode(db.agentDao().listAll()),
             "data/providers.json" to encode(db.providerDao().listAll()),
             "data/models.json" to encode(db.providerDao().modelsAll()),
@@ -349,7 +437,23 @@ class BackupManager(
             "data/api_usage.json" to encode(db.usageDao().listAll()),
             "data/memories.json" to encode(db.memoryDao().listAll()),
             "data/settings.json" to encode(db.settingDao().listAll()),
+            "data/agent_consents.json" to encode(db.agentRunDao().listAllConsents()),
+            "data/agent_runs.json" to encode(db.agentRunDao().listAllRuns()),
+            "data/agent_actions.json" to encode(db.agentRunDao().listAllActions()),
+            "data/plugins.json" to encode(db.pluginDao().listAll()),
+            "data/plugin_permissions.json" to encode(db.pluginPermissionDao().listAll()),
+            "data/mcp_servers.json" to encode(db.mcpDao().listAllServers()),
+            "data/mcp_tools.json" to encode(db.mcpDao().listAllTools()),
+            "data/mcp_call_logs.json" to encode(db.mcpDao().listAllLogs()),
         )
+        // 快照必须包含附件二进制，否则回滚时数据库与文件不一致。
+        val base = context.filesDir.canonicalFile
+        db.attachmentDao().listAll().forEach { attachment ->
+            val file = File(context.filesDir, attachment.uri).canonicalFile
+            if (file.exists() && file.path.startsWith(base.path + File.separator)) {
+                entries["files/${attachment.uri}"] = file.readBytes()
+            }
+        }
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { zip ->
             entries.forEach { (path, bytes) ->
@@ -376,19 +480,43 @@ class BackupManager(
 
     private fun readZip(uri: Uri): Map<String, ByteArray> {
         val entries = mutableMapOf<String, ByteArray>()
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            ZipInputStream(input).use { zip ->
+        var total = 0L
+        var count = 0
+        val input = context.contentResolver.openInputStream(uri)
+            ?: throw IllegalArgumentException("无法读取备份文件")
+        input.use { stream ->
+            ZipInputStream(stream).use { zip ->
                 var entry = zip.nextEntry
                 while (entry != null) {
+                    count += 1
+                    require(count <= MAX_ENTRIES) { "备份条目过多（上限 $MAX_ENTRIES）" }
                     if (!entry.isDirectory) {
-                        entries[entry.name] = zip.readBytes()
+                        validatePath(entry.name)
+                        require(!entries.containsKey(entry.name)) { "备份存在重复路径：${entry.name}" }
+                        val bytes = readEntryLimited(zip)
+                        total += bytes.size
+                        require(total <= MAX_TOTAL_BYTES) { "备份解压后超过大小上限" }
+                        entries[entry.name] = bytes
                     }
                     zip.closeEntry()
                     entry = zip.nextEntry
                 }
             }
-        } ?: throw IllegalArgumentException("无法读取备份文件")
+        }
         return entries
+    }
+
+    private fun readEntryLimited(zip: ZipInputStream): ByteArray {
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val n = zip.read(buffer)
+            if (n < 0) break
+            out.write(buffer, 0, n)
+            require(out.size() <= MAX_ENTRY_BYTES) { "备份内单个文件超过大小上限" }
+            require(out.size() <= MAX_TOTAL_BYTES) { "备份解压后超过大小上限" }
+        }
+        return out.toByteArray()
     }
 
     private inline fun <reified T> encode(items: List<T>): ByteArray =

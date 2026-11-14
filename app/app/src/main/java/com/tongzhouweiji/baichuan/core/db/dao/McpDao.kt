@@ -3,6 +3,7 @@ package com.tongzhouweiji.baichuan.core.db.dao
 import androidx.room.Dao
 import androidx.room.Delete
 import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import com.tongzhouweiji.baichuan.core.db.entity.McpCallLogEntity
@@ -41,4 +42,31 @@ interface McpDao {
 
     @Query("SELECT * FROM mcp_call_logs ORDER BY createdAt DESC LIMIT 100")
     fun observeLogs(): Flow<List<McpCallLogEntity>>
+
+    @Query("SELECT * FROM mcp_servers")
+    suspend fun listAllServers(): List<McpServerEntity>
+
+    @Query("DELETE FROM mcp_servers")
+    suspend fun clearServers()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertServers(items: List<McpServerEntity>)
+
+    @Query("SELECT * FROM mcp_tools")
+    suspend fun listAllTools(): List<McpToolEntity>
+
+    @Query("DELETE FROM mcp_tools")
+    suspend fun clearAllTools()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllTools(items: List<McpToolEntity>)
+
+    @Query("SELECT * FROM mcp_call_logs")
+    suspend fun listAllLogs(): List<McpCallLogEntity>
+
+    @Query("DELETE FROM mcp_call_logs")
+    suspend fun clearAllLogs()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllLogs(items: List<McpCallLogEntity>)
 }

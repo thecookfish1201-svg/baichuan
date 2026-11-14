@@ -99,6 +99,9 @@ fun DeepSeekChat(
     onToggleDeepThinking: () -> Unit,
     onToggleSearch: () -> Unit = {},
     onOpenAgentSettings: () -> Unit = {},
+    agentAuthorized: Boolean = false,
+    agentMode: Boolean = false,
+    onToggleAgentMode: () -> Unit = {},
 ) {
     val dark = isSystemInDarkTheme()
     val listState = rememberLazyListState()
@@ -135,6 +138,16 @@ fun DeepSeekChat(
                     }
                 },
                 actions = {
+                    if (agentAuthorized) {
+                        IconButton(onClick = onToggleAgentMode) {
+                            Icon(
+                                imageVector = Icons.Default.Build,
+                                contentDescription = if (agentMode) "关闭 Agent 模式" else "开启 Agent 模式",
+                                tint = if (agentMode) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     IconButton(onClick = onOpenAgentSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "智能体设置")
                     }

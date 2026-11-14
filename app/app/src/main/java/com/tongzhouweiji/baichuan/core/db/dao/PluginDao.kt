@@ -3,6 +3,7 @@ package com.tongzhouweiji.baichuan.core.db.dao
 import androidx.room.Dao
 import androidx.room.Delete
 import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import com.tongzhouweiji.baichuan.core.db.entity.PluginEntity
@@ -30,4 +31,13 @@ interface PluginDao {
 
     @Query("UPDATE plugins SET state = :state, updatedAt = :now WHERE pluginId = :pluginId")
     suspend fun updateState(pluginId: String, state: String, now: Long)
+
+    @Query("SELECT * FROM plugins")
+    suspend fun listAll(): List<PluginEntity>
+
+    @Query("DELETE FROM plugins")
+    suspend fun clearAll()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(items: List<PluginEntity>)
 }

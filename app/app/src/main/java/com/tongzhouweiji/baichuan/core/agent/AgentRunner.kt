@@ -29,12 +29,14 @@ class AgentRunner(private val db: BaichuanDatabase) {
         systemPrompt: String,
         config: ProviderConfig,
         modelName: String,
+        history: List<ChatMessage> = emptyList(),
     ): RunResult {
         val consent = db.agentRunDao().findConsent(agentId)
             ?: throw IllegalStateException("该智能体未获得 Agent 授权")
         val tools = AgentToolRegistry.definitions()
         val messages = mutableListOf<ChatMessage>()
         if (systemPrompt.isNotBlank()) messages.add(ChatMessage(role = "system", content = systemPrompt))
+        messages.addAll(history)
         messages.add(ChatMessage(role = "user", content = goal))
 
         val runId = db.agentRunDao().insertRun(
@@ -48,43 +50,43 @@ class AgentRunner(private val db: BaichuanDatabase) {
         )
         val adapter = ModelAdapterRegistry.adapterFor(config.protocol)
         var steps = 0
-
-        repeat(MAX_ROUNDS) {
-            val result = adapter.chat(
-                config = config,
-                request = ChatRequest(
-                    model = modelName,
-                    messages = messages.toList(),
-                    stream = false,
-                    tools = tools,
-                ),
-            )
-            if (result.toolCalls.isEmpty()) {
-                db.agentRunDao().finishRun(runId, "done", System.currentTimeMillis(), null)
-                return RunResult(result.content, runId, steps)
-            }
-            // 记录模型返回的工具调用请求，供下一轮上下文使用。
-            messages.add(
-                ChatMessage(
-                    role = "assistant",
-                    content = result.content,
-                    toolCalls = result.toolCalls,
-                ),
-            )
-            result.toolCalls.forEach { call ->
-                steps += 1
-                val output = executeTool(agentId, runId, call)
-                messages.add(
-                    ChatMessage(
-                        role = "tool",
-                        content = output,
-                        toolCallId = call.id,
+        try {
+            repeat(MAX_ROUNDS) {
+                val result = adapter.chat(
+                    config = config,
+                    request = ChatRequest(
+                        model = modelName,
+                        messages = messages.toList(),
+                        stream = false,
+                        tools = tools,
                     ),
                 )
+                if (result.toolCalls.isEmpty()) {
+                    db.agentRunDao().finishRun(runId, "done", System.currentTimeMillis(), null)
+                    return RunResult(result.content, runId, steps)
+                }
+                messages.add(
+                    ChatMessage(
+                        role = "assistant",
+                        content = result.content,
+                        toolCalls = result.toolCalls,
+                    ),
+                )
+                result.toolCalls.forEach { call ->
+                    steps += 1
+                    val output = executeTool(agentId, runId, call)
+                    messages.add(ChatMessage(role = "tool", content = output, toolCallId = call.id))
+                }
             }
+            db.agentRunDao().finishRun(runId, "failed", System.currentTimeMillis(), "超过最大工具调用轮数")
+            return RunResult("工具调用次数超过上限，已停止。", runId, steps)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            db.agentRunDao().finishRun(runId, "cancelled", System.currentTimeMillis(), "用户取消")
+            throw e
+        } catch (e: Exception) {
+            db.agentRunDao().finishRun(runId, "failed", System.currentTimeMillis(), e.message)
+            throw e
         }
-        db.agentRunDao().finishRun(runId, "failed", System.currentTimeMillis(), "超过最大工具调用轮数")
-        return RunResult("工具调用次数超过上限，已停止。", runId, steps)
     }
 
     private suspend fun executeTool(
@@ -92,6 +94,43 @@ class AgentRunner(private val db: BaichuanDatabase) {
         runId: Long,
         call: com.tongzhouweiji.baichuan.model.ToolCallRequest,
     ): String {
+        // 每次执行前重新校验授权：撤销后立即阻断后续工具。
+        val consent = db.agentRunDao().findConsent(agentId)
+        if (consent == null) {
+            throw IllegalStateException("Agent 授权已撤销，任务已停止")
+        }
+        if (consent.docVersion != AgentManager.DOC_VERSION) {
+            throw IllegalStateException("授权说明已更新，请重新授权后再使用 Agent")
+        }
+        if (call.arguments.length > 4000) {
+            return "工具参数过大，已拒绝执行".also {
+                db.agentRunDao().insertAction(
+                    AgentActionEntity(
+                        runId = runId,
+                        toolName = call.name,
+                        argsSummary = call.arguments.take(200),
+                        confirmed = false,
+                        resultSummary = it,
+                        createdAt = System.currentTimeMillis(),
+                    ),
+                )
+            }
+        }
+        runCatching { kotlinx.serialization.json.Json.parseToJsonElement(call.arguments) }
+            .getOrElse {
+                return "工具参数不是合法 JSON，已拒绝执行".also {
+                    db.agentRunDao().insertAction(
+                        AgentActionEntity(
+                            runId = runId,
+                            toolName = call.name,
+                            argsSummary = call.arguments.take(200),
+                            confirmed = false,
+                            resultSummary = it,
+                            createdAt = System.currentTimeMillis(),
+                        ),
+                    )
+                }
+            }
         val tool = AgentToolRegistry.find(call.name)
             ?: return "工具未注册：${call.name}".also {
                 db.agentRunDao().insertAction(

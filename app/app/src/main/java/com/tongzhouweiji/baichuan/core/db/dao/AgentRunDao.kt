@@ -2,6 +2,7 @@ package com.tongzhouweiji.baichuan.core.db.dao
 
 import androidx.room.Dao
 import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.tongzhouweiji.baichuan.core.db.entity.AgentActionEntity
 import com.tongzhouweiji.baichuan.core.db.entity.AgentConsentEntity
@@ -36,4 +37,31 @@ interface AgentRunDao {
 
     @Query("SELECT * FROM agent_actions WHERE runId = :runId ORDER BY createdAt ASC")
     fun observeActions(runId: Long): Flow<List<AgentActionEntity>>
+
+    @Query("SELECT * FROM agent_consents")
+    suspend fun listAllConsents(): List<AgentConsentEntity>
+
+    @Query("DELETE FROM agent_consents")
+    suspend fun clearAllConsents()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllConsents(items: List<AgentConsentEntity>)
+
+    @Query("SELECT * FROM agent_runs")
+    suspend fun listAllRuns(): List<AgentRunEntity>
+
+    @Query("DELETE FROM agent_runs")
+    suspend fun clearAllRuns()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllRuns(items: List<AgentRunEntity>)
+
+    @Query("SELECT * FROM agent_actions")
+    suspend fun listAllActions(): List<AgentActionEntity>
+
+    @Query("DELETE FROM agent_actions")
+    suspend fun clearAllActions()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllActions(items: List<AgentActionEntity>)
 }

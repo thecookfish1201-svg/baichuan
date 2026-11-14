@@ -111,6 +111,11 @@ fun ChatScreen(
     val style by app.container.settingDao.observe("ui_style").collectAsState(initial = null)
     val listState = rememberLazyListState()
 
+    var agentAuthorized by remember { mutableStateOf(false) }
+    LaunchedEffect(agentId) {
+        agentAuthorized = app.container.agentManager.isAuthorized(agentId)
+    }
+
     val tts = remember { TtsPlayer(context) }
     DisposableEffect(Unit) {
         onDispose { tts.release() }
@@ -154,6 +159,10 @@ fun ChatScreen(
             },
             onSpeak = { text -> tts.speak(text) },
             onToggleDeepThinking = viewModel::toggleDeepThinking,
+            onToggleSearch = viewModel::toggleSearch,
+            agentAuthorized = agentAuthorized,
+            agentMode = state.agentMode,
+            onToggleAgentMode = viewModel::toggleAgentMode,
         )
         return
     }
@@ -170,6 +179,16 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    if (agentAuthorized) {
+                        IconButton(onClick = viewModel::toggleAgentMode) {
+                            Icon(
+                                imageVector = Icons.Default.Build,
+                                contentDescription = if (state.agentMode) "关闭 Agent 模式" else "开启 Agent 模式",
+                                tint = if (state.agentMode) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     IconButton(onClick = onOpenAgentSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "智能体设置")
                     }

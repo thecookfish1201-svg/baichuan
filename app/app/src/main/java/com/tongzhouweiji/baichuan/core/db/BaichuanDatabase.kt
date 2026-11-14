@@ -289,8 +289,6 @@ abstract class BaichuanDatabase : RoomDatabase() {
         fun build(context: Context): BaichuanDatabase =
             Room.databaseBuilder(context, BaichuanDatabase::class.java, NAME)
                 .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
-                // 兜底：遇到无法迁移的旧版本时清库重建，保证不闪退（会丢本地数据）。
-                .fallbackToDestructiveMigration()
                 .build()
     }
 }

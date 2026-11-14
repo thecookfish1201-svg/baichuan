@@ -28,7 +28,22 @@ class AttachmentStore(private val context: Context) {
         File(context.filesDir, "attachments").apply { mkdirs() }
     }
 
-    fun fileOf(relativePath: String): File = File(context.filesDir, relativePath)
+    /**
+     * 把数据库中的相对路径解析为应用私有附件目录内的文件。
+     * 恢复的备份可能包含被篡改的路径，必须做边界校验，避免读取私有目录外的文件。
+     */
+    private fun resolve(relativePath: String): File {
+        require(relativePath.isNotBlank()) { "附件路径为空" }
+        require(!relativePath.startsWith("/")) { "附件路径不能是绝对路径" }
+        require(!relativePath.contains("..")) { "附件路径不能包含 .." }
+        require(!relativePath.contains('\\')) { "附件路径不能包含反斜杠" }
+        val base = root.canonicalFile
+        val target = File(context.filesDir, relativePath).canonicalFile
+        require(target.path.startsWith(base.path + File.separator)) { "附件路径越界：$relativePath" }
+        return target
+    }
+
+    fun fileOf(relativePath: String): File = resolve(relativePath)
 
     fun storeImage(uri: Uri, conversationId: Long): StoredAttachment? {
         val bytes = compressImage(uri) ?: return null
@@ -67,7 +82,7 @@ class AttachmentStore(private val context: Context) {
     }.getOrNull()
 
     fun readBase64(relativePath: String): String? = runCatching {
-        val file = fileOf(relativePath)
+        val file = resolve(relativePath)
         if (!file.exists()) return null
         Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
     }.getOrNull()

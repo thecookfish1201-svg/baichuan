@@ -25,4 +25,7 @@ interface PluginPermissionDao {
 
     @Query("DELETE FROM plugin_permissions")
     suspend fun clearAll()
+
+    @Query("SELECT * FROM plugin_permissions")
+    suspend fun listAll(): List<PluginPermissionEntity>
 }

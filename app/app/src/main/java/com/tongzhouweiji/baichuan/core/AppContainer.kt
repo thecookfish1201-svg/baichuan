@@ -9,17 +9,21 @@ class AppContainer(context: Context) {
     private val appContext = context.applicationContext
 
     /**
-     * 打开数据库。覆盖安装时如果旧库 schema 与当前不兼容，
-     * 兜底删除本地库重建，保证应用能启动（会丢失本地数据，仅限开发期）。
+     * 打开数据库。失败时重试一次，仍失败则抛出明确异常。
+     * 绝不自动删除本地数据库；恢复界面由 MainActivity 展示。
      */
     val database: BaichuanDatabase by lazy {
-        runCatching {
-            BaichuanDatabase.build(appContext).also { it.openHelper.writableDatabase }
-        }.getOrElse { error ->
-            Logger.e("数据库打开失败，清库重建", error)
-            appContext.deleteDatabase("baichuan.db")
-            BaichuanDatabase.build(appContext)
+        var lastError: Throwable? = null
+        repeat(2) { attempt ->
+            try {
+                return@lazy BaichuanDatabase.build(appContext).also { it.openHelper.writableDatabase }
+            } catch (e: Exception) {
+                lastError = e
+                Logger.e("数据库打开失败（第 ${attempt + 1} 次），保留原始数据", e)
+                if (attempt == 0) runCatching { Thread.sleep(300) }
+            }
         }
+        throw IllegalStateException("数据库打开失败，原始数据已保留", lastError)
     }
 
     val agentDao by lazy { database.agentDao() }

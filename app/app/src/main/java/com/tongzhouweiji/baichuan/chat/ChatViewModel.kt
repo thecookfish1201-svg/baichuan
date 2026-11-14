@@ -75,6 +75,8 @@ data class ChatUiState(
     val paramNotice: String? = null,
     val modelLabel: String? = null,
     val sessionSearch: Boolean = false,
+    /** 显式开启的 Agent 模式；未授权或未开启时走普通聊天。 */
+    val agentMode: Boolean = false,
 )
 
 private data class GenerationParams(
@@ -101,6 +103,7 @@ class ChatViewModel(
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     private var streamJob: Job? = null
+    private var agentJob: Job? = null
     private val lastUiUpdate = AtomicLong(0)
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -179,8 +182,10 @@ class ChatViewModel(
         val conversationId = _state.value.conversationId
         if (conversationId == 0L) return
         viewModelScope.launch {
-            _state.update { it.copy(input = "", pendingAttachments = emptyList()) }
-            val conversation = conversationDao.findById(conversationId) ?: return@launch
+            val conversation = conversationDao.findById(conversationId) ?: run {
+                _state.update { it.copy(globalError = "会话不存在，发送失败") }
+                return@launch
+            }
             val parentId = conversation.activeLeafMessageId
             val stored = withContext(Dispatchers.IO) {
                 pending.mapNotNull { p ->
@@ -188,13 +193,24 @@ class ChatViewModel(
                     else attachmentStore.storeFile(p.uri, conversationId)
                 }
             }
-            val userMessage = repository.appendMessage(
-                conversationId = conversationId,
-                role = "user",
-                content = text,
-                parentId = parentId,
-                attachments = stored,
-            )
+            if (stored.size != pending.size) {
+                _state.update { it.copy(globalError = "附件保存失败，请重试或移除附件") }
+                return@launch
+            }
+            // 先持久化用户消息，成功后再清空输入，避免发送失败时丢失草稿。
+            val userMessage = try {
+                repository.appendMessage(
+                    conversationId = conversationId,
+                    role = "user",
+                    content = text,
+                    parentId = parentId,
+                    attachments = stored,
+                )
+            } catch (e: Exception) {
+                _state.update { it.copy(globalError = "发送失败：${e.message}") }
+                return@launch
+            }
+            _state.update { it.copy(input = "", pendingAttachments = emptyList()) }
             generate(conversationId, userMessage.id)
         }
     }
@@ -255,9 +271,24 @@ class ChatViewModel(
 
     fun stopGenerating() {
         streamJob?.cancel()
+        agentJob?.cancel()
     }
 
     /** 会话级联网搜索开关。未配置搜索服务时给出提示。 */
+    /** 切换 Agent 模式：仅授权的智能体可用；关闭后恢复普通聊天。 */
+    fun toggleAgentMode() {
+        val agent = _state.value.agent ?: return
+        viewModelScope.launch {
+            val authorized = app.container.agentManager.isAuthorized(agent.id)
+            if (!authorized) {
+                _state.update { it.copy(globalError = "该智能体未获得 Agent 授权，请先在智能体设置中授予") }
+                return@launch
+            }
+            val next = !_state.value.agentMode
+            _state.update { it.copy(agentMode = next) }
+        }
+    }
+
     fun toggleSearch() {
         val next = !_state.value.sessionSearch
         _state.update { it.copy(sessionSearch = next) }
@@ -307,8 +338,9 @@ class ChatViewModel(
     private suspend fun generate(conversationId: Long, contextLeafId: Long?) {
         val agent = _state.value.agent ?: return
         val contextPath = repository.pathTo(conversationId, contextLeafId)
-        if (app.container.agentManager.isAuthorized(agent.id)) {
-            runAgent(conversationId, agent, contextPath)
+        if (_state.value.agentMode && app.container.agentManager.isAuthorized(agent.id)) {
+            // 独立 Job：停止按钮可以取消 Agent 任务。
+            agentJob = viewModelScope.launch { runAgent(conversationId, agent, contextPath) }
             return
         }
         val agentParams = parseGeneration(agent)
@@ -543,7 +575,11 @@ class ChatViewModel(
     ) {
         val resolved = resolveModel(agent)
         if (resolved == null) {
-            val placeholder = repository.appendAssistantPlaceholder(conversationId, contextPath.lastOrNull()?.id)
+            // 传递当前分支的历史消息（不含本次 user 文本），让 Agent 拥有对话上下文。
+        val history = contextPath.dropLast(1)
+            .filter { it.role == "user" || it.role == "assistant" }
+            .map { com.tongzhouweiji.baichuan.model.ChatMessage(role = it.role, content = it.content) }
+        val placeholder = repository.appendAssistantPlaceholder(conversationId, contextPath.lastOrNull()?.id)
             repository.finishMessage(placeholder.id, "failed", "", "未配置模型，无法使用 Agent")
             refreshPath()
             return
@@ -558,6 +594,10 @@ class ChatViewModel(
             if (agent.systemPrompt.isNotBlank()) append(agent.systemPrompt).append("\n\n")
             if (agent.persona.isNotBlank()) append("人设：").append(agent.persona)
         }
+        // 传递当前分支的历史消息（不含本次 user 文本），让 Agent 拥有对话上下文。
+        val history = contextPath.dropLast(1)
+            .filter { it.role == "user" || it.role == "assistant" }
+            .map { com.tongzhouweiji.baichuan.model.ChatMessage(role = it.role, content = it.content) }
         val placeholder = repository.appendAssistantPlaceholder(conversationId, contextPath.lastOrNull()?.id)
         _state.update {
             it.copy(
@@ -575,6 +615,7 @@ class ChatViewModel(
                 systemPrompt = systemPrompt,
                 config = config,
                 modelName = modelName,
+                history = history,
             )
             val text = result.text.ifBlank { "（Agent 已完成，但没有返回文本内容）" }
             repository.finishMessage(placeholder.id, "done", text)

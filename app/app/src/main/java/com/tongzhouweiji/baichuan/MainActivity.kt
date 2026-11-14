@@ -20,10 +20,19 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        val app = application as BaichuanApplication
+        val databaseFailure = runCatching { app.container.database }.exceptionOrNull()
         setContent {
             BaichuanTheme {
-                NotificationPermissionRequester()
-                BaichuanApp()
+                if (databaseFailure != null) {
+                    com.tongzhouweiji.baichuan.ui.screen.recovery.DatabaseRecoveryScreen(
+                        error = databaseFailure.message,
+                        onRetry = { recreate() },
+                    )
+                } else {
+                    NotificationPermissionRequester()
+                    BaichuanApp()
+                }
             }
         }
     }
