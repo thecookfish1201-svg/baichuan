@@ -86,6 +86,12 @@ class BackupManager(
     @Serializable
     data class BackupFile(val path: String, val sha256: String, val size: Long)
 
+    /** 导入状态机（对应方案 3.2）。 */
+    enum class ImportState {
+        SELECTED, STAGING, STRUCTURE_VALIDATED, HASH_VERIFIED, DATA_PARSED,
+        SNAPSHOT_READY, APPLYING, COMMITTED, ROLLED_BACK, RECOVERY_REQUIRED,
+    }
+
     data class BackupInfo(
         val fileCount: Int,
         val totalBytes: Long,
@@ -305,16 +311,30 @@ class BackupManager(
         entries: Map<String, ByteArray>,
         manifest: BackupManifest,
     ): BackupInfo {
+        var state = ImportState.SELECTED
+        fun transition(next: ImportState) {
+            Logger.w("备份导入状态：$state → $next")
+            state = next
+        }
+
         val safety = File(context.cacheDir, "pre_restore_${System.currentTimeMillis()}.zip")
+        transition(ImportState.STAGING)
         try {
             safety.writeBytes(snapshotToBytes())
+            transition(ImportState.SNAPSHOT_READY)
         } catch (e: Exception) {
+            transition(ImportState.ROLLED_BACK)
             Logger.e("恢复前快照创建失败，已中止导入", e)
             throw IllegalStateException("无法创建恢复前快照，已取消导入（原始数据未改动）", e)
         }
 
+        val stagingDir = File(context.cacheDir, "restore-staging-${System.currentTimeMillis()}")
+        transition(ImportState.APPLYING)
         try {
-            applyBackup(entries, manifest.categories.toSet())
+            stagingDir.mkdirs()
+            applyBackupWithStaging(entries, manifest.categories.toSet(), stagingDir)
+            moveStagingToFiles(stagingDir)
+            transition(ImportState.COMMITTED)
             return BackupInfo(
                 fileCount = entries.size,
                 totalBytes = entries.values.sumOf { it.size.toLong() },
@@ -322,11 +342,61 @@ class BackupManager(
                 createdAt = manifest.createdAt,
             )
         } catch (e: Exception) {
+            transition(ImportState.ROLLED_BACK)
             Logger.e("导入失败，尝试恢复", e)
             runCatching {
                 if (safety.exists()) restoreFromBytes(safety.readBytes())
-            }.onFailure { Logger.e("恢复保护数据失败", it) }
+            }.onFailure {
+                transition(ImportState.RECOVERY_REQUIRED)
+                Logger.e("恢复保护数据失败，需要人工恢复", it)
+            }
             throw e
+        } finally {
+            runCatching { stagingDir.deleteRecursively() }
+        }
+    }
+
+    /** 与 applyBackup 相同，但附件先写入 staging 目录，数据提交后再移动到私有目录。 */
+    private suspend fun applyBackupWithStaging(
+        entries: Map<String, ByteArray>,
+        categories: Set<String>,
+        stagingDir: File,
+    ) {
+        db.openHelper.writableDatabase.execSQL("PRAGMA foreign_keys = OFF")
+        try {
+            db.withTransaction { applyCategoryRows(entries, categories) }
+            if ("attachments" in categories) {
+                val base = stagingDir.canonicalFile
+                entries.keys.filter { it.startsWith("files/") }.forEach { path ->
+                    val relative = path.removePrefix("files/")
+                    validatePath(relative)
+                    val target = File(stagingDir, relative)
+                    val canonical = target.canonicalFile
+                    require(canonical.path.startsWith(base.path + File.separator)) {
+                        "附件路径越界：$relative"
+                    }
+                    target.parentFile?.mkdirs()
+                    entries[path]?.let { target.writeBytes(it) }
+                }
+            }
+        } finally {
+            db.openHelper.writableDatabase.execSQL("PRAGMA foreign_keys = ON")
+        }
+    }
+
+    /** 把 staging 中的附件移动到 filesDir（仅在数据库提交成功后调用）。 */
+    private fun moveStagingToFiles(stagingDir: File) {
+        if (!stagingDir.exists()) return
+        val base = context.filesDir.canonicalFile
+        stagingDir.walkTopDown().filter { it.isFile }.forEach { file ->
+            val relative = file.relativeTo(stagingDir).path
+            val target = File(context.filesDir, relative)
+            val canonical = target.canonicalFile
+            require(canonical.path.startsWith(base.path + File.separator)) {
+                "附件路径越界：$relative"
+            }
+            target.parentFile?.mkdirs()
+            file.copyTo(target, overwrite = true)
         }
     }
 
@@ -419,6 +489,75 @@ class BackupManager(
             }
         } finally {
             db.openHelper.writableDatabase.execSQL("PRAGMA foreign_keys = ON")
+        }
+    }
+
+    private suspend fun applyCategoryRows(entries: Map<String, ByteArray>, categories: Set<String>) {
+        if ("chat" in categories) {
+            db.attachmentDao().clearAll()
+            db.messageDao().clearAll()
+            db.summaryDao().clearAll()
+            db.errorEventDao().clearAll()
+            db.scheduledMessageDao().clearAll()
+            db.usageDao().clearAll()
+            db.conversationDao().clearAll()
+            entries["data/conversations.json"]?.let { db.conversationDao().insertAll(decodeList<ConversationEntity>(it)) }
+            entries["data/messages.json"]?.let { db.messageDao().insertAll(decodeList<MessageEntity>(it)) }
+            entries["data/attachments.json"]?.let { bytes ->
+                val list = decodeList<AttachmentEntity>(bytes)
+                val base = context.filesDir.canonicalFile
+                list.forEach { attachment ->
+                    val target = File(context.filesDir, attachment.uri).canonicalFile
+                    require(target.path.startsWith(base.path + File.separator)) {
+                        "备份附件路径越界：${attachment.uri}"
+                    }
+                }
+                db.attachmentDao().insertAll(list)
+            }
+            entries["data/summaries.json"]?.let { db.summaryDao().insertAll(decodeList<ConversationSummaryEntity>(it)) }
+            entries["data/error_events.json"]?.let { db.errorEventDao().insertAll(decodeList<ErrorEventEntity>(it)) }
+            entries["data/scheduled_messages.json"]?.let { db.scheduledMessageDao().insertAll(decodeList<ScheduledMessageEntity>(it)) }
+            entries["data/api_usage.json"]?.let { db.usageDao().insertAll(decodeList<ApiUsageEntity>(it)) }
+        }
+        if ("agents" in categories) {
+            db.auxBindingDao().clearAll()
+            db.providerDao().clearModelsAll()
+            db.providerDao().clearAll()
+            db.agentDao().clearAll()
+            entries["data/agents.json"]?.let { db.agentDao().insertAll(decodeList<AgentEntity>(it)) }
+            entries["data/providers.json"]?.let { db.providerDao().insertAll(decodeList<ProviderEntity>(it)) }
+            entries["data/models.json"]?.let { db.providerDao().insertModels(decodeList<ModelEntity>(it)) }
+            entries["data/aux_bindings.json"]?.let { db.auxBindingDao().insertAll(decodeList<AuxBindingEntity>(it)) }
+        }
+        if ("memories" in categories) {
+            db.memoryDao().clearAll()
+            entries["data/memories.json"]?.let { db.memoryDao().insertAll(decodeList<MemoryEntity>(it)) }
+        }
+        if ("settings" in categories) {
+            db.settingDao().clearAll()
+            entries["data/settings.json"]?.let { db.settingDao().insertAll(decodeList<SettingEntity>(it)) }
+        }
+        if ("agent" in categories) {
+            db.agentRunDao().clearAllActions()
+            db.agentRunDao().clearAllRuns()
+            db.agentRunDao().clearAllConsents()
+            entries["data/agent_consents.json"]?.let { db.agentRunDao().insertAllConsents(decodeList(it)) }
+            entries["data/agent_runs.json"]?.let { db.agentRunDao().insertAllRuns(decodeList(it)) }
+            entries["data/agent_actions.json"]?.let { db.agentRunDao().insertAllActions(decodeList(it)) }
+        }
+        if ("plugins" in categories) {
+            db.pluginPermissionDao().clearAll()
+            db.pluginDao().clearAll()
+            entries["data/plugins.json"]?.let { db.pluginDao().insertAll(decodeList(it)) }
+            entries["data/plugin_permissions.json"]?.let { db.pluginPermissionDao().insertAll(decodeList(it)) }
+        }
+        if ("mcp" in categories) {
+            db.mcpDao().clearAllTools()
+            db.mcpDao().clearAllLogs()
+            db.mcpDao().clearServers()
+            entries["data/mcp_servers.json"]?.let { db.mcpDao().insertServers(decodeList(it)) }
+            entries["data/mcp_tools.json"]?.let { db.mcpDao().insertAllTools(decodeList(it)) }
+            entries["data/mcp_call_logs.json"]?.let { db.mcpDao().insertAllLogs(decodeList(it)) }
         }
     }
 
