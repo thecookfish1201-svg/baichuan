@@ -281,7 +281,7 @@ private fun DsMessageItem(
             Column(horizontalAlignment = Alignment.End) {
                 Box(
                     modifier = Modifier
-                        .widthIn(max = 280.dp)
+                        .widthIn(max = 320.dp)
                         .background(
                             if (dark) DSUserBubbleDark else DSUserBubbleLight,
                             RoundedCornerShape(20.dp),
@@ -314,7 +314,11 @@ private fun DsMessageItem(
             )
         }
         if (message.content.isNotEmpty()) {
-            Box(Modifier.padding(top = if (reasoning.isNullOrBlank()) 0.dp else 8.dp)) {
+            Box(
+                Modifier
+                    .widthIn(max = 720.dp)
+                    .padding(top = if (reasoning.isNullOrBlank()) 0.dp else 8.dp),
+            ) {
                 MarkdownText(
                     text = message.content,
                     fontSize = 17,
