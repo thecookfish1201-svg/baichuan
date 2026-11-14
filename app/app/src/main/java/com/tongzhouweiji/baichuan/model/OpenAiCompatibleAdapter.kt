@@ -119,20 +119,42 @@ object OpenAiCompatibleAdapter : ModelAdapter {
                 val reasoning = StringBuilder()
                 var promptTokens: Int? = null
                 var completionTokens: Int? = null
-                while (true) {
-                    val line = source.readUtf8Line() ?: break
-                    if (!line.startsWith("data:")) continue
-                    val data = line.removePrefix("data:").trim()
-                    if (data.equals("[DONE]", ignoreCase = true)) break
-                    val (delta, think) = parseStreamChunk(data, content, reasoning)
+                // 按 SSE 规范分帧：空行结束一个事件，同一事件的多个 data 行用换行拼接。
+                val eventData = StringBuilder()
+                var finished = false
+                suspend fun flushEvent() {
+                    if (eventData.isEmpty()) return
+                    val data = eventData.toString()
+                    eventData.clear()
+                    if (data.equals("[DONE]", ignoreCase = true)) {
+                        finished = true
+                        return
+                    }
+                    // 单个畸形事件不应中断整个流。
+                    val parsed = runCatching { parseStreamChunk(data, content, reasoning) }
+                        .onFailure { com.tongzhouweiji.baichuan.core.log.Logger.w("跳过异常 SSE 事件", it) }
+                        .getOrNull() ?: return
+                    val (delta, think) = parsed
                     if (think.isNotEmpty()) onReasoning(think)
                     if (delta.isNotEmpty()) onDelta(delta)
-                    val usage = parseUsage(data)
-                    if (usage != null) {
+                    parseUsage(data)?.let { usage ->
                         promptTokens = usage.first
                         completionTokens = usage.second
                     }
                 }
+                while (!finished) {
+                    val line = source.readUtf8Line() ?: break
+                    val normalized = line.trimEnd('\r')
+                    if (normalized.isEmpty()) {
+                        flushEvent()
+                        continue
+                    }
+                    if (!normalized.startsWith("data:")) continue
+                    val payload = normalized.removePrefix("data:").removePrefix(" ")
+                    if (eventData.isNotEmpty()) eventData.append('\n')
+                    eventData.append(payload)
+                }
+                flushEvent()
                 ChatResult(
                     content = content.toString(),
                     reasoning = reasoning.toString().ifBlank { null },
@@ -192,7 +214,17 @@ object OpenAiCompatibleAdapter : ModelAdapter {
                 }
             }
         }
-        if (request.tools.isNotEmpty()) {
+        if (request.serverTools.isNotEmpty()) {
+            // DeepSeek 服务端工具：搜索与阅读链接由服务端完成，不能与 function tools 混用。
+            putJsonArray("tools") {
+                request.serverTools.forEach { name ->
+                    addJsonObject {
+                        put("type", name)
+                        put("name", name)
+                    }
+                }
+            }
+        } else if (request.tools.isNotEmpty()) {
             putJsonArray("tools") {
                 request.tools.forEach { tool ->
                     addJsonObject {
@@ -205,6 +237,12 @@ object OpenAiCompatibleAdapter : ModelAdapter {
                     }
                 }
             }
+        }
+        request.safetyLevel?.let { level ->
+            putJsonObject("safety_check") { put("level", level) }
+        }
+        if (request.titleEnabled) {
+            putJsonObject("title") { put("enabled", true) }
         }
         put("stream", stream)
         val isDeepSeek = config.baseUrl.contains("deepseek", ignoreCase = true)

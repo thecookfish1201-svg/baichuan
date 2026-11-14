@@ -366,7 +366,11 @@ class ChatViewModel(
         }
         var searchContext: String? = null
         var sourcesJson: String? = null
-        if (_state.value.sessionSearch) {
+        val searchModel = resolveModel(agent)
+        val isDeepSeekSearchModel = searchModel != null &&
+            searchModel.second.contains("deepseek", ignoreCase = true) &&
+            searchModel.second.contains("flash", ignoreCase = true)
+        if (_state.value.sessionSearch && !isDeepSeekSearchModel) {
             val searchConfig = loadSearchConfig()
             if (searchConfig != null) {
                 val query = contextPath.lastOrNull { it.role == "user" }?.content.orEmpty()
@@ -418,12 +422,22 @@ class ChatViewModel(
         val notice = if (params.reasoning.isThinking && isDeepSeek) "深度思考模式已开启：温度参数不生效，关闭深度思考后温度才可用" else null
         _state.update { it.copy(modelLabel = modelName, paramNotice = notice) }
         val adapter = ModelAdapterRegistry.adapterFor(config.protocol)
+        val serverTools = if (isDeepSeekSearchModel && _state.value.sessionSearch) {
+            buildList {
+                add("deepseek_web_search")
+                if (params.reasoning.isThinking) add("deepseek_read_url")
+            }
+        } else {
+            emptyList()
+        }
         val request = ChatRequest(
             model = modelName,
             messages = messages,
             temperature = params.temperature,
             stream = params.stream,
             reasoningEffort = params.reasoning,
+            serverTools = serverTools,
+            safetyLevel = app.container.settingDao.get("safety_level")?.takeIf { it.isNotBlank() },
         )
 
         streamJob = viewModelScope.launch {

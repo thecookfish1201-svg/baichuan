@@ -22,6 +22,12 @@ data class ChatRequest(
     val reasoningEffort: ReasoningEffort = ReasoningEffort.AUTO,
     /** 可用工具；为空表示不启用工具调用。 */
     val tools: List<ToolDefinition> = emptyList(),
+    /** DeepSeek 服务端工具（deepseek_web_search / deepseek_read_url），与 tools 互斥。 */
+    val serverTools: List<String> = emptyList(),
+    /** 内容安全等级：low / high；null 表示不开启。 */
+    val safetyLevel: String? = null,
+    /** 请求服务端生成会话标题。 */
+    val titleEnabled: Boolean = false,
 )
 
 data class ChatResult(
