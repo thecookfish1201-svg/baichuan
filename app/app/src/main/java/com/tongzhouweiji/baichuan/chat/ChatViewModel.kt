@@ -654,6 +654,9 @@ class ChatViewModel(
                 config = config,
                 modelName = modelName,
                 history = history,
+                onActivity = { text ->
+                    _state.update { it.copy(streamingContent = text) }
+                },
             )
             val text = result.text.ifBlank { "（Agent 已完成，但没有返回文本内容）" }
             repository.finishMessage(placeholder.id, "done", text)

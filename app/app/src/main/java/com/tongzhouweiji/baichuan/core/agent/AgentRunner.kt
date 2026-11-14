@@ -30,6 +30,7 @@ class AgentRunner(private val db: BaichuanDatabase) {
         config: ProviderConfig,
         modelName: String,
         history: List<ChatMessage> = emptyList(),
+        onActivity: (suspend (String) -> Unit)? = null,
     ): RunResult {
         val consent = db.agentRunDao().findConsent(agentId)
             ?: throw IllegalStateException("该智能体未获得 Agent 授权")
@@ -74,7 +75,9 @@ class AgentRunner(private val db: BaichuanDatabase) {
                 )
                 result.toolCalls.forEach { call ->
                     steps += 1
+                    onActivity?.invoke("正在调用 ${call.name}…")
                     val output = executeTool(agentId, runId, call)
+                    onActivity?.invoke("${call.name} 已完成")
                     messages.add(ChatMessage(role = "tool", content = output, toolCallId = call.id))
                 }
             }
