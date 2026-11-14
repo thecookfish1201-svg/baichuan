@@ -45,6 +45,8 @@ class AppContainer(context: Context) {
 
     val attachmentStore by lazy { com.tongzhouweiji.baichuan.core.media.AttachmentStore(appContext) }
 
+    val ttsService by lazy { com.tongzhouweiji.baichuan.core.tts.TtsService(appContext, database) }
+
     val chatRepository by lazy { ChatRepository(database) }
 
     val pluginManager by lazy { com.tongzhouweiji.baichuan.core.plugin.PluginManager(appContext, database) }

@@ -63,6 +63,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBarDefaults
 import android.widget.Toast
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -85,6 +86,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.tongzhouweiji.baichuan.BaichuanApplication
+import kotlinx.coroutines.launch
 import com.tongzhouweiji.baichuan.R
 import com.tongzhouweiji.baichuan.chat.BranchInfo
 import com.tongzhouweiji.baichuan.chat.ChatViewModel
@@ -116,6 +118,7 @@ fun ChatScreen(
         agentAuthorized = app.container.agentManager.isAuthorized(agentId)
     }
 
+    val scope = rememberCoroutineScope()
     val tts = remember { TtsPlayer(context) }
     DisposableEffect(Unit) {
         onDispose { tts.release() }
@@ -157,7 +160,12 @@ fun ChatScreen(
                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 clipboard.setPrimaryClip(ClipData.newPlainText("message", text))
             },
-            onSpeak = { text -> tts.speak(text) },
+            onSpeak = { text ->
+                scope.launch {
+                    val played = runCatching { app.container.ttsService.speak(text) }.getOrDefault(false)
+                    if (!played) tts.speak(text)
+                }
+            },
             onToggleDeepThinking = viewModel::toggleDeepThinking,
             onToggleSearch = viewModel::toggleSearch,
             agentAuthorized = agentAuthorized,
@@ -241,7 +249,14 @@ fun ChatScreen(
                         onRegenerate = { viewModel.regenerate(message.id) },
                         onEdit = { viewModel.editAndResend(message.id, it) },
                         onDelete = { viewModel.deleteMessage(message.id) },
-                        onSpeak = { tts.speak(message.content) },
+                        onSpeak = {
+                            scope.launch {
+                                val played = runCatching {
+                                    app.container.ttsService.speak(message.content)
+                                }.getOrDefault(false)
+                                if (!played) tts.speak(message.content)
+                            }
+                        },
                         onCycleBranch = { delta -> viewModel.cycleBranch(message.id, delta) },
                     )
                     }
