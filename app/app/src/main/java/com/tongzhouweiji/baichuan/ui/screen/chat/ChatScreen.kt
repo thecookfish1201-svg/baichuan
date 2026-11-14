@@ -273,6 +273,19 @@ fun ChatScreen(
                         },
                         onCycleBranch = { delta -> viewModel.cycleBranch(message.id, delta) },
                     )
+                    com.tongzhouweiji.baichuan.ui.component.SourcesRow(
+                        sourcesJson = message.sourcesJson,
+                        onOpenUrl = { url ->
+                            runCatching {
+                                context.startActivity(
+                                    android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW,
+                                        android.net.Uri.parse(url),
+                                    ),
+                                )
+                            }
+                        },
+                    )
                     }
                 }
                 if (state.activePath.isEmpty()) {
