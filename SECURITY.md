@@ -4,7 +4,7 @@
 
 请不要在公开 Issue 中披露安全漏洞。请通过以下方式私下联系维护者：
 
-- 邮箱：`Thecookfish1201@gmail.com`
+- 使用 GitHub 仓库的 **Security → Report a vulnerability**（私密报告），或通过维护者的 GitHub 主页公开联系方式。
 
 请在报告中包含：影响版本、复现步骤、影响范围、可能的修复建议。
 
