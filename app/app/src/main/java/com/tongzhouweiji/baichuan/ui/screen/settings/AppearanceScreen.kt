@@ -39,6 +39,8 @@ fun AppearanceScreen(onBack: () -> Unit) {
     val app = context.applicationContext as BaichuanApplication
     val scope = rememberCoroutineScope()
     val style by app.container.settingDao.observe("ui_style").collectAsState(initial = "wechat")
+    val ttsProvider by app.container.settingDao.observe("tts_provider").collectAsState(initial = "")
+    val ttsVoice by app.container.settingDao.observe("tts_voice").collectAsState(initial = "stella")
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -75,6 +77,42 @@ fun AppearanceScreen(onBack: () -> Unit) {
             ) {
                 scope.launch {
                     app.container.settingDao.put(SettingEntity("ui_style", "deepseek"))
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "朗读",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            OptionRow(
+                title = "云端朗读（DeepSeek TTS）",
+                subtitle = "朗读优先使用云端音色，失败自动回退系统朗读",
+                selected = ttsProvider == "deepseek",
+            ) {
+                scope.launch {
+                    app.container.settingDao.put(
+                        SettingEntity("tts_provider", if (ttsProvider == "deepseek") "" else "deepseek"),
+                    )
+                }
+            }
+            OptionRow(
+                title = "音色：海星（女声）",
+                subtitle = "stella，默认音色",
+                selected = ttsVoice != "tide",
+            ) {
+                scope.launch {
+                    app.container.settingDao.put(SettingEntity("tts_voice", "stella"))
+                }
+            }
+            OptionRow(
+                title = "音色：暗潮（男声）",
+                subtitle = "tide",
+                selected = ttsVoice == "tide",
+            ) {
+                scope.launch {
+                    app.container.settingDao.put(SettingEntity("tts_voice", "tide"))
                 }
             }
             Spacer(Modifier.height(16.dp))
