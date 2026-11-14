@@ -21,6 +21,9 @@ class BaichuanApplication : Application() {
         container = AppContainer(this)
         restoreScheduledMessages()
         appScope.launch { runCatching { container.refreshTheme() } }
+        appScope.launch {
+            runCatching { container.agentRunDao.markInterruptedRuns(System.currentTimeMillis()) }
+        }
     }
 
     /**

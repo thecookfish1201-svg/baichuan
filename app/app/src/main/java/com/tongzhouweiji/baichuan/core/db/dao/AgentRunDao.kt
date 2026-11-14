@@ -50,6 +50,10 @@ interface AgentRunDao {
     @Query("SELECT * FROM agent_runs")
     suspend fun listAllRuns(): List<AgentRunEntity>
 
+    /** 应用重启时把遗留的运行中任务标记为中断，避免永远显示运行中。 */
+    @Query("UPDATE agent_runs SET state = 'interrupted', endedAt = :now, cancelReason = '应用重启' WHERE state = 'running'")
+    suspend fun markInterruptedRuns(now: Long)
+
     @Query("DELETE FROM agent_runs")
     suspend fun clearAllRuns()
 

@@ -403,76 +403,7 @@ class BackupManager(
     private suspend fun applyBackup(entries: Map<String, ByteArray>, categories: Set<String>) {
         db.openHelper.writableDatabase.execSQL("PRAGMA foreign_keys = OFF")
         try {
-            db.withTransaction {
-                if ("chat" in categories) {
-                    db.attachmentDao().clearAll()
-                    db.messageDao().clearAll()
-                    db.summaryDao().clearAll()
-                    db.errorEventDao().clearAll()
-                    db.scheduledMessageDao().clearAll()
-                    db.usageDao().clearAll()
-                    db.conversationDao().clearAll()
-                    entries["data/conversations.json"]?.let { db.conversationDao().insertAll(decodeList<ConversationEntity>(it)) }
-                    entries["data/messages.json"]?.let { db.messageDao().insertAll(decodeList<MessageEntity>(it)) }
-                    entries["data/attachments.json"]?.let { bytes ->
-                        val list = decodeList<AttachmentEntity>(bytes)
-                        val base = context.filesDir.canonicalFile
-                        list.forEach { attachment ->
-                            val target = File(context.filesDir, attachment.uri).canonicalFile
-                            require(target.path.startsWith(base.path + File.separator)) {
-                                "备份附件路径越界：${attachment.uri}"
-                            }
-                        }
-                        db.attachmentDao().insertAll(list)
-                    }
-                    entries["data/summaries.json"]?.let { db.summaryDao().insertAll(decodeList<ConversationSummaryEntity>(it)) }
-                    entries["data/error_events.json"]?.let { db.errorEventDao().insertAll(decodeList<ErrorEventEntity>(it)) }
-                    entries["data/scheduled_messages.json"]?.let { db.scheduledMessageDao().insertAll(decodeList<ScheduledMessageEntity>(it)) }
-                    entries["data/api_usage.json"]?.let { db.usageDao().insertAll(decodeList<ApiUsageEntity>(it)) }
-                }
-                if ("agents" in categories) {
-                    db.auxBindingDao().clearAll()
-                    db.providerDao().clearModelsAll()
-                    db.providerDao().clearAll()
-                    db.agentDao().clearAll()
-                    entries["data/agents.json"]?.let { db.agentDao().insertAll(decodeList<AgentEntity>(it)) }
-                    entries["data/providers.json"]?.let { db.providerDao().insertAll(decodeList<ProviderEntity>(it)) }
-                    entries["data/models.json"]?.let { db.providerDao().insertModels(decodeList<ModelEntity>(it)) }
-                    entries["data/aux_bindings.json"]?.let { db.auxBindingDao().insertAll(decodeList<AuxBindingEntity>(it)) }
-                }
-                if ("memories" in categories) {
-                    db.memoryDao().clearAll()
-                    entries["data/memories.json"]?.let { db.memoryDao().insertAll(decodeList<MemoryEntity>(it)) }
-                }
-                if ("settings" in categories) {
-                    db.settingDao().clearAll()
-                    entries["data/settings.json"]?.let { db.settingDao().insertAll(decodeList<SettingEntity>(it)) }
-                }
-                if ("agent" in categories) {
-                    db.agentRunDao().clearAllActions()
-                    db.agentRunDao().clearAllRuns()
-                    db.agentRunDao().clearAllConsents()
-                    entries["data/agent_consents.json"]?.let { db.agentRunDao().insertAllConsents(decodeList(it)) }
-                    entries["data/agent_runs.json"]?.let { db.agentRunDao().insertAllRuns(decodeList(it)) }
-                    entries["data/agent_actions.json"]?.let { db.agentRunDao().insertAllActions(decodeList(it)) }
-                }
-                if ("plugins" in categories) {
-                    db.pluginPermissionDao().clearAll()
-                    db.pluginDao().clearAll()
-                    entries["data/plugins.json"]?.let { db.pluginDao().insertAll(decodeList(it)) }
-                    entries["data/plugin_permissions.json"]?.let {
-                        db.pluginPermissionDao().insertAll(decodeList(it))
-                    }
-                }
-                if ("mcp" in categories) {
-                    db.mcpDao().clearAllTools()
-                    db.mcpDao().clearAllLogs()
-                    db.mcpDao().clearServers()
-                    entries["data/mcp_servers.json"]?.let { db.mcpDao().insertServers(decodeList(it)) }
-                    entries["data/mcp_tools.json"]?.let { db.mcpDao().insertAllTools(decodeList(it)) }
-                    entries["data/mcp_call_logs.json"]?.let { db.mcpDao().insertAllLogs(decodeList(it)) }
-                }
-            }
+            db.withTransaction { applyCategoryRows(entries, categories) }
             if ("attachments" in categories) {
                 val base = context.filesDir.canonicalFile
                 entries.keys.filter { it.startsWith("files/") }.forEach { path ->
