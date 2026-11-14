@@ -104,10 +104,24 @@ fun DeepSeekChat(
     onToggleAgentMode: () -> Unit = {},
 ) {
     val dark = isSystemInDarkTheme()
+    val context = androidx.compose.ui.platform.LocalContext.current
     val listState = rememberLazyListState()
 
-    LaunchedEffect(state.activePath.size, state.streamingContent.length, state.streamingReasoning.length) {
+    // 仅当用户接近底部时跟随流式内容；上滑阅读时不打断。
+    val nearBottom by remember {
+        androidx.compose.runtime.derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            last == null || last.index >= info.totalItemsCount - 2
+        }
+    }
+    LaunchedEffect(state.activePath.size) {
         if (state.activePath.isNotEmpty()) {
+            listState.animateScrollToItem(state.activePath.lastIndex)
+        }
+    }
+    LaunchedEffect(state.streamingContent.length, state.streamingReasoning.length) {
+        if (nearBottom && state.activePath.isNotEmpty()) {
             listState.animateScrollToItem(state.activePath.lastIndex)
         }
     }
@@ -202,6 +216,20 @@ fun DeepSeekChat(
                             onCopy = { onCopy(message.content) },
                             onSpeak = { onSpeak(message.content) },
                         )
+                        if (message.role == "assistant") {
+                            com.tongzhouweiji.baichuan.ui.component.SourcesRow(
+                                sourcesJson = message.sourcesJson,
+                                onOpenUrl = { url ->
+                                    runCatching {
+                                        val intent = android.content.Intent(
+                                            android.content.Intent.ACTION_VIEW,
+                                            android.net.Uri.parse(url),
+                                        )
+                                        context.startActivity(intent)
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }
