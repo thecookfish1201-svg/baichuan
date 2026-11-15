@@ -54,8 +54,16 @@ data class ProviderConfig(
     val apiKey: String,
 )
 
+/**
+ * 模型/服务调用异常。
+ *
+ * [message] 是**可以展示给用户**的中文文案，不得包含 HTTP 响应体、request_id、
+ * 原始协议错误或 API Key；[diagnostic] 是脱敏后的原始诊断信息，只允许进入错误记录，
+ * 不允许直接渲染到聊天界面。
+ */
 class ModelException(
     val code: String,
     override val message: String,
     cause: Throwable? = null,
+    val diagnostic: String? = null,
 ) : Exception(message, cause)

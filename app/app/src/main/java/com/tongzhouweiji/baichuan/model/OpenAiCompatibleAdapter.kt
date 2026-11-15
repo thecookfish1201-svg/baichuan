@@ -51,7 +51,9 @@ object OpenAiCompatibleAdapter : ModelAdapter {
         try {
             HttpClientProvider.client.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) throw httpError(response.code, body)
+                if (!response.isSuccessful) {
+                    throw httpError(response.code, body, requestIdOf(response))
+                }
                 val root = json.parseToJsonElement(body).jsonObject
                 val data = root["data"]?.jsonArray ?: return@withContext emptyList()
                 data.mapNotNull { element ->
@@ -84,7 +86,9 @@ object OpenAiCompatibleAdapter : ModelAdapter {
                 HttpClientProvider.client.newCall(httpRequest).execute().use { response ->
                     val text = response.body?.string().orEmpty()
                     Logger.d("chat response code=${response.code} len=${text.length}")
-                    if (!response.isSuccessful) throw httpError(response.code, text)
+                    if (!response.isSuccessful) {
+                        throw httpError(response.code, text, requestIdOf(response))
+                    }
                     parseFullResponse(text)
                 }
             } catch (e: ModelException) {
@@ -112,7 +116,7 @@ object OpenAiCompatibleAdapter : ModelAdapter {
             HttpClientProvider.client.newCall(httpRequest).execute().use { response ->
                 if (!response.isSuccessful) {
                     val errBody = response.body?.string().orEmpty()
-                    throw httpError(response.code, errBody)
+                    throw httpError(response.code, errBody, requestIdOf(response))
                 }
                 val source = response.body?.source() ?: throw ModelException("empty", "服务端未返回内容")
                 val content = StringBuilder()
@@ -129,6 +133,18 @@ object OpenAiCompatibleAdapter : ModelAdapter {
                     if (data.equals("[DONE]", ignoreCase = true)) {
                         finished = true
                         return
+                    }
+                    // 服务端可能在流中下发 error 事件：不能静默忽略，否则会显示「空回复但成功」。
+                    val eventRoot = runCatching { json.parseToJsonElement(data).jsonObject }.getOrNull()
+                    eventRoot?.get("error")?.let { element ->
+                        val raw = runCatching {
+                            element.jsonObject["message"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        }.getOrDefault("")
+                        throw ModelException(
+                            "stream_error",
+                            streamErrorMessage(raw),
+                            diagnostic = "SSE error event: " + Logger.redact(data.take(2000)),
+                        )
                     }
                     // 单个畸形事件不应中断整个流。
                     val parsed = runCatching { parseStreamChunk(data, content, reasoning) }
@@ -330,18 +346,54 @@ object OpenAiCompatibleAdapter : ModelAdapter {
         }
     }
 
-    private fun httpError(code: Int, body: String): ModelException {
-        val summary = runCatching {
+    private fun requestIdOf(response: okhttp3.Response): String? =
+        response.header("x-request-id")
+            ?: response.header("request-id")
+            ?: response.header("x-ds-request-id")
+
+    /**
+     * HTTP 错误映射：用户只看到可行动的文案；原始响应体、request_id 与供应商错误只进诊断。
+     */
+    private fun httpError(code: Int, body: String, requestId: String? = null): ModelException {
+        val serverMessage = runCatching {
             json.parseToJsonElement(body).jsonObject["error"]?.jsonObject?.get("message")
                 ?.jsonPrimitive?.contentOrNull
         }.getOrNull()
-        val message = when (code) {
-            401, 403 -> "认证失败，请检查 API Key"
-            404 -> "接口地址不正确（404）"
-            429 -> "请求过于频繁或额度不足（429）"
-            in 500..599 -> "服务端错误（$code）"
-            else -> summary ?: "请求失败（$code）"
+        val diagnostic = buildString {
+            append("HTTP ").append(code)
+            if (!requestId.isNullOrBlank()) append(" request_id=").append(requestId)
+            if (body.isNotBlank()) append("\n").append(Logger.redact(body.take(2000)))
+            if (!serverMessage.isNullOrBlank()) append("\nserver: ").append(Logger.redact(serverMessage.take(500)))
         }
-        return ModelException("http_$code", message)
+        val message = when (code) {
+            400 -> if (body.contains("must follow a user message", ignoreCase = true)) {
+                "当前对话分支不完整，无法继续发送。请切换到其他版本，或新建对话后重试。"
+            } else {
+                "请求被服务端拒绝：对话内容或参数不符合要求。请检查模型配置，或新建对话后重试。"
+            }
+            401, 403 -> "认证失败：请检查服务商的 API Key 是否正确、是否有该模型权限。"
+            404 -> "接口地址或模型名称不正确，请检查服务商配置。"
+            413 -> "当前对话内容过长，请新建对话后重试。"
+            422 -> "请求参数不被服务端接受，请检查模型与生成参数。"
+            429 -> "请求过于频繁或额度不足，请稍后重试。"
+            in 500..599 -> "服务暂时不可用（$code），请稍后重试。"
+            else -> "请求失败（$code），请稍后重试。"
+        }
+        return ModelException("http_$code", message, diagnostic = diagnostic)
+    }
+
+    /** 流内错误文案映射，避免把供应商英文协议错误直接展示给用户。 */
+    private fun streamErrorMessage(raw: String): String = when {
+        raw.contains("must follow a user message", ignoreCase = true) ->
+            "当前对话分支不完整，无法继续发送。请切换到其他版本，或新建对话后重试。"
+        raw.contains("rate limit", ignoreCase = true) || raw.contains("too many", ignoreCase = true) ->
+            "请求过于频繁，请稍后重试。"
+        raw.contains("too long", ignoreCase = true) || raw.contains("context length", ignoreCase = true) ->
+            "当前对话内容过长，请新建对话后重试。"
+        raw.contains("invalid api key", ignoreCase = true) || raw.contains("auth", ignoreCase = true) ->
+            "认证失败：请检查服务商的 API Key。"
+        raw.contains("content", ignoreCase = true) && raw.contains("risk", ignoreCase = true) ->
+            "内容未通过服务端安全审核，请调整后重试。"
+        else -> "生成中断：服务端返回错误，请稍后重试。"
     }
 }

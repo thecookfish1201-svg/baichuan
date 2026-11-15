@@ -14,6 +14,13 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE conversationId = :conversationId AND deletedAt IS NULL ORDER BY createdAt ASC")
     suspend fun listByConversation(conversationId: Long): List<MessageEntity>
 
+    /** 含已删除消息：用于消息树完整性校验与级联软删除。 */
+    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY createdAt ASC")
+    suspend fun listAllByConversation(conversationId: Long): List<MessageEntity>
+
+    @Query("UPDATE messages SET deletedAt = :now, updatedAt = :now WHERE id IN (:ids)")
+    suspend fun softDeleteMany(ids: List<Long>, now: Long)
+
     @Query("SELECT * FROM messages WHERE id = :id")
     suspend fun findById(id: Long): MessageEntity?
 

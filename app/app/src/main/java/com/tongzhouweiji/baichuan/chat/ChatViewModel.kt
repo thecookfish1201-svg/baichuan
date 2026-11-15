@@ -17,6 +17,7 @@ import com.tongzhouweiji.baichuan.core.db.entity.ApiUsageEntity
 import com.tongzhouweiji.baichuan.core.db.entity.AttachmentEntity
 import com.tongzhouweiji.baichuan.core.db.entity.ConversationSummaryEntity
 import com.tongzhouweiji.baichuan.core.db.entity.ErrorEventEntity
+import com.tongzhouweiji.baichuan.core.db.entity.MemoryEntity
 import com.tongzhouweiji.baichuan.core.db.entity.MessageEntity
 import com.tongzhouweiji.baichuan.core.log.Logger
 import com.tongzhouweiji.baichuan.core.media.AttachmentStore
@@ -28,6 +29,7 @@ import com.tongzhouweiji.baichuan.model.ModelAdapterRegistry
 import com.tongzhouweiji.baichuan.model.ModelException
 import com.tongzhouweiji.baichuan.model.ProviderConfig
 import com.tongzhouweiji.baichuan.model.ReasoningEffort
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -70,20 +72,25 @@ data class ChatUiState(
     val branchInfo: Map<Long, BranchInfo> = emptyMap(),
     val input: String = "",
     val pendingAttachments: List<PendingAttachment> = emptyList(),
-    val isStreaming: Boolean = false,
     val streamingMessageId: Long? = null,
     val streamingContent: String = "",
     val streamingReasoning: String = "",
     val globalError: String? = null,
     val sessionReasoning: ReasoningEffort? = null,
+    /** 一次性的参数/能力提示（例如温度不生效、文件不会被读取）。 */
     val paramNotice: String? = null,
     val modelLabel: String? = null,
     val sessionSearch: Boolean = false,
     /** 显式开启的 Agent 模式；未授权或未开启时走普通聊天。 */
     val agentMode: Boolean = false,
-    /** 输入区状态机：Idle / Preparing / Streaming / StopRequested / Completed / Failed / Cancelled。 */
+    /** 输入区状态机，唯一的任务状态事实源。 */
     val composerState: ComposerState = ComposerState.IDLE,
-)
+) {
+    /** 派生值：只读，不允许独立写入。 */
+    val isStreaming: Boolean
+        get() = composerState == ComposerState.STREAMING ||
+            composerState == ComposerState.STOP_REQUESTED
+}
 
 private data class GenerationParams(
     val temperature: Double = 0.7,
@@ -129,22 +136,39 @@ class ChatViewModel(
     private suspend fun refreshPath() {
         val conversationId = _state.value.conversationId
         if (conversationId == 0L) return
-        val conversation = conversationDao.findById(conversationId) ?: return
-        val path = repository.pathTo(conversationId, conversation.activeLeafMessageId)
+        var conversation = conversationDao.findById(conversationId) ?: return
+        var path = repository.pathTo(conversationId, conversation.activeLeafMessageId)
+        if (!path.valid) {
+            // 历史数据可能留下已删除的活动叶子：修复到最新一条未删除消息后再展示。
+            val repaired = repository.repairActiveLeaf(conversationId)
+            conversation = conversationDao.findById(conversationId) ?: return
+            path = repository.pathTo(conversationId, repaired)
+            if (!path.valid) {
+                _state.update {
+                    it.copy(
+                        activePath = emptyList(),
+                        branchInfo = emptyMap(),
+                        attachmentsByMessage = emptyMap(),
+                        globalError = path.reason ?: PromptAssembler.INVALID_PATH_MESSAGE,
+                    )
+                }
+                return
+            }
+        }
         val all = repository.listMessages(conversationId)
         val branchInfo = mutableMapOf<Long, BranchInfo>()
-        path.forEach { message ->
+        path.messages.forEach { message ->
             val siblings = all.filter { it.parentId == message.parentId }.sortedBy { it.siblingSeq }
             if (siblings.size > 1) {
                 val index = siblings.indexOfFirst { it.id == message.id } + 1
                 branchInfo[message.id] = BranchInfo(index = index, total = siblings.size)
             }
         }
-        val attachments = if (path.isEmpty()) emptyMap() else
-            attachmentDao.listByMessages(path.map { it.id }).groupBy { it.messageId }
+        val attachments = if (path.messages.isEmpty()) emptyMap() else
+            attachmentDao.listByMessages(path.messages.map { it.id }).groupBy { it.messageId }
         _state.update {
             it.copy(
-                activePath = path,
+                activePath = path.messages,
                 branchInfo = branchInfo,
                 attachmentsByMessage = attachments,
             )
@@ -187,64 +211,88 @@ class ChatViewModel(
         if (text.isEmpty() && pending.isEmpty()) return
         val conversationId = _state.value.conversationId
         if (conversationId == 0L) return
-        // 防重入：PREPARING / STREAMING / STOP_REQUESTED 期间不再接受新的发送。
         if (!canStartGeneration()) return
+        val hasFileAttachment = pending.any { it.type != "image" }
+        // 在任何挂起/IO 之前同步进入 PREPARING，避免快速连点产生第二个任务。
+        beginPreparing()
         prepareJob = viewModelScope.launch {
-            _state.update { it.copy(composerState = ComposerState.PREPARING, globalError = null) }
-            val conversation = conversationDao.findById(conversationId)
-            if (conversation == null) {
-                failGeneration("会话不存在，发送失败")
-                return@launch
-            }
-            val parentId = conversation.activeLeafMessageId
-            val stored = mutableListOf<com.tongzhouweiji.baichuan.core.media.StoredAttachment>()
-            var attachmentFailed = false
-            withContext(Dispatchers.IO) {
-                pending.forEach { p ->
-                    val result = if (p.type == "image") {
-                        attachmentStore.storeImage(p.uri, conversationId)
-                    } else {
-                        attachmentStore.storeFile(p.uri, conversationId)
-                    }
-                    if (result == null) attachmentFailed = true else stored.add(result)
+            try {
+                val conversation = conversationDao.findById(conversationId)
+                if (conversation == null) {
+                    failGeneration("会话不存在，发送失败")
+                    return@launch
                 }
+                val parentId = conversation.activeLeafMessageId
+                val stored = mutableListOf<StoredAttachment>()
+                var attachmentFailed = false
+                withContext(Dispatchers.IO) {
+                    pending.forEach { p ->
+                        val result = if (p.type == "image") {
+                            attachmentStore.storeImage(p.uri, conversationId)
+                        } else {
+                            attachmentStore.storeFile(p.uri, conversationId)
+                        }
+                        if (result == null) attachmentFailed = true else stored.add(result)
+                    }
+                }
+                if (attachmentFailed) {
+                    stored.forEach { attachmentStore.delete(it.relativePath) }
+                    failGeneration("附件保存失败，草稿已保留，请重试或移除附件")
+                    return@launch
+                }
+                // 先持久化用户消息，成功后再清空输入，避免发送失败时丢失草稿。
+                val userMessage = try {
+                    repository.appendMessage(
+                        conversationId = conversationId,
+                        role = "user",
+                        content = text,
+                        parentId = parentId,
+                        attachments = stored,
+                    )
+                } catch (e: Exception) {
+                    Logger.e("append user message failed", e)
+                    stored.forEach { attachmentStore.delete(it.relativePath) }
+                    failGeneration("发送失败：本地数据写入异常，请重试")
+                    return@launch
+                }
+                _state.update {
+                    it.copy(
+                        input = "",
+                        pendingAttachments = emptyList(),
+                        paramNotice = if (hasFileAttachment) {
+                            "文件已保存在本地，但当前模型不会读取文件正文；图片会随消息发送。"
+                        } else {
+                            it.paramNotice
+                        },
+                    )
+                }
+                generate(conversationId, userMessage.id)
+            } catch (e: CancellationException) {
+                if (_state.value.composerState == ComposerState.STOP_REQUESTED) {
+                    _state.update { it.copy(composerState = ComposerState.CANCELLED) }
+                }
+                throw e
             }
-            if (attachmentFailed) {
-                stored.forEach { attachmentStore.delete(it.relativePath) }
-                failGeneration("附件保存失败，草稿已保留，请重试或移除附件")
-                return@launch
-            }
-            // 先持久化用户消息，成功后再清空输入，避免发送失败时丢失草稿。
-            val userMessage = try {
-                repository.appendMessage(
-                    conversationId = conversationId,
-                    role = "user",
-                    content = text,
-                    parentId = parentId,
-                    attachments = stored,
-                )
-            } catch (e: Exception) {
-                stored.forEach { attachmentStore.delete(it.relativePath) }
-                failGeneration("发送失败：${e.message}")
-                return@launch
-            }
-            _state.update {
-                it.copy(
-                    input = "",
-                    pendingAttachments = emptyList(),
-                    composerState = ComposerState.STREAMING,
-                )
-            }
-            generate(conversationId, userMessage.id)
         }
     }
 
     fun regenerate(messageId: Long) {
         if (!canStartGeneration()) return
-        val conversationId = _state.value.conversationId
-        viewModelScope.launch {
-            val message = repository.findMessage(messageId) ?: return@launch
-            generate(conversationId, message.parentId)
+        beginPreparing()
+        prepareJob = viewModelScope.launch {
+            try {
+                val message = repository.findMessage(messageId)
+                if (message == null) {
+                    failGeneration("消息不存在，无法重新生成")
+                    return@launch
+                }
+                generate(_state.value.conversationId, message.parentId)
+            } catch (e: CancellationException) {
+                if (_state.value.composerState == ComposerState.STOP_REQUESTED) {
+                    _state.update { it.copy(composerState = ComposerState.CANCELLED) }
+                }
+                throw e
+            }
         }
     }
 
@@ -253,17 +301,39 @@ class ChatViewModel(
         val text = newText.trim()
         if (text.isEmpty()) return
         val conversationId = _state.value.conversationId
-        viewModelScope.launch {
-            val message = repository.findMessage(messageId) ?: return@launch
-            if (message.role != "user") return@launch
-            val newUser = repository.appendMessage(conversationId, "user", text, message.parentId)
-            generate(conversationId, newUser.id)
+        beginPreparing()
+        prepareJob = viewModelScope.launch {
+            try {
+                val message = repository.findMessage(messageId)
+                if (message == null) {
+                    failGeneration("消息不存在，无法编辑")
+                    return@launch
+                }
+                if (message.role != "user") {
+                    failGeneration("只能编辑用户消息")
+                    return@launch
+                }
+                val newUser = try {
+                    repository.appendMessage(conversationId, "user", text, message.parentId)
+                } catch (e: Exception) {
+                    Logger.e("append edited message failed", e)
+                    failGeneration("发送失败：本地数据写入异常，请重试")
+                    return@launch
+                }
+                generate(conversationId, newUser.id)
+            } catch (e: CancellationException) {
+                if (_state.value.composerState == ComposerState.STOP_REQUESTED) {
+                    _state.update { it.copy(composerState = ComposerState.CANCELLED) }
+                }
+                throw e
+            }
         }
     }
 
     fun deleteMessage(messageId: Long) {
+        val conversationId = _state.value.conversationId
         viewModelScope.launch {
-            repository.softDeleteMessage(messageId)
+            repository.softDeleteMessage(conversationId, messageId)
             refreshPath()
         }
     }
@@ -311,10 +381,38 @@ class ChatViewModel(
         _state.update { it.copy(globalError = null) }
     }
 
+    fun clearParamNotice() {
+        _state.update { it.copy(paramNotice = null) }
+    }
+
     /** 当前是否允许发起新的生成任务。 */
     private fun canStartGeneration(): Boolean = when (_state.value.composerState) {
         ComposerState.IDLE, ComposerState.COMPLETED, ComposerState.FAILED, ComposerState.CANCELLED -> true
         else -> false
+    }
+
+    private fun beginPreparing() {
+        _state.update {
+            it.copy(
+                composerState = ComposerState.PREPARING,
+                globalError = null,
+                streamingMessageId = null,
+                streamingContent = "",
+                streamingReasoning = "",
+            )
+        }
+    }
+
+    private fun beginStreaming(messageId: Long) {
+        _state.update {
+            it.copy(
+                composerState = ComposerState.STREAMING,
+                streamingMessageId = messageId,
+                streamingContent = "",
+                streamingReasoning = "",
+                globalError = null,
+            )
+        }
     }
 
     /** 早退/失败统一进入终态，并保留草稿。 */
@@ -322,7 +420,6 @@ class ChatViewModel(
         _state.update {
             it.copy(
                 composerState = ComposerState.FAILED,
-                isStreaming = false,
                 streamingMessageId = null,
                 globalError = message,
             )
@@ -330,6 +427,18 @@ class ChatViewModel(
     }
 
     /** 会话级联网搜索开关。未配置搜索服务时给出提示。 */
+    fun toggleSearch() {
+        val next = !_state.value.sessionSearch
+        _state.update { it.copy(sessionSearch = next) }
+        if (next) {
+            viewModelScope.launch {
+                if (loadSearchConfig() == null) {
+                    _state.update { it.copy(globalError = "搜索不可用：请先在「管理 → 相关配置」添加 DeepSeek 服务商，或到「我的 → 网络搜索」配置自定义服务") }
+                }
+            }
+        }
+    }
+
     /** 切换 Agent 模式：仅授权的智能体可用；关闭后恢复普通聊天。 */
     fun toggleAgentMode() {
         val agent = _state.value.agent ?: return
@@ -341,18 +450,6 @@ class ChatViewModel(
             }
             val next = !_state.value.agentMode
             _state.update { it.copy(agentMode = next) }
-        }
-    }
-
-    fun toggleSearch() {
-        val next = !_state.value.sessionSearch
-        _state.update { it.copy(sessionSearch = next) }
-        if (next) {
-            viewModelScope.launch {
-                if (loadSearchConfig() == null) {
-                    _state.update { it.copy(globalError = "搜索不可用：请先在「管理 → 相关配置」添加 DeepSeek 服务商，或到「我的 → 网络搜索」配置自定义服务") }
-                }
-            }
         }
     }
 
@@ -391,44 +488,64 @@ class ChatViewModel(
     }
 
     private suspend fun generate(conversationId: Long, contextLeafId: Long?) {
-        val agent = _state.value.agent ?: return
-        val contextPath = repository.pathTo(conversationId, contextLeafId)
-        if (_state.value.agentMode && app.container.agentManager.isAuthorized(agent.id)) {
-            // 独立 Job：停止按钮可以取消 Agent 任务。
-            agentJob = viewModelScope.launch { runAgent(conversationId, agent, contextPath) }
+        val agent = _state.value.agent
+        if (agent == null) {
+            failGeneration("助手不存在，无法发送")
             return
         }
+        val path = repository.pathTo(conversationId, contextLeafId)
+        if (!path.valid) {
+            failGeneration(PromptAssembler.INVALID_PATH_MESSAGE)
+            return
+        }
+        if (app.container.featureFlags.agentExecutionEnabled &&
+            _state.value.agentMode &&
+            app.container.agentManager.isAuthorized(agent.id)
+        ) {
+            // 独立 Job：停止按钮可以取消 Agent 任务。
+            agentJob = viewModelScope.launch { runAgent(conversationId, agent, path.messages) }
+            return
+        }
+        val resolved = resolveModel(agent)
+        if (resolved == null) {
+            failGeneration("未配置模型：请先在「管理 → 相关配置」添加服务商并选择模型")
+            return
+        }
+        val (config, modelName) = resolved
         val agentParams = parseGeneration(agent)
         val effort = _state.value.sessionReasoning ?: agentParams.reasoning
         val params = agentParams.copy(reasoning = effort)
+
+        var imageReadFailed = false
         val imagesByMessage = withContext(Dispatchers.IO) {
             val map = mutableMapOf<Long, List<String>>()
-            contextPath.forEach { message ->
+            path.messages.forEach { message ->
                 val images = attachmentDao.listByMessage(message.id)
                     .filter { it.type == "image" }
-                    .mapNotNull { attachmentStore.readBase64(it.uri) }
+                    .mapNotNull { attachment ->
+                        attachmentStore.readBase64(attachment.uri).also { if (it == null) imageReadFailed = true }
+                    }
                 if (images.isNotEmpty()) map[message.id] = images
             }
             map
         }
-        maybeCompress(conversationId, agent, contextPath)
-        val memories = memoryDao.listByAgent(agent.id).take(20).map { it.content }
+
+        maybeCompress(conversationId, agent, path.messages)
+        val memories = selectMemories(memoryDao.listByAgent(agent.id), latestUserText(path.messages))
         val summary = summaryDao.latest(conversationId)
         val effectivePath = if (summary != null) {
-            contextPath.filter { it.id > summary.upToMessageId }
+            path.messages.filter { it.id > summary.upToMessageId }
         } else {
-            contextPath
+            path.messages
         }
         var searchContext: String? = null
         var sourcesJson: String? = null
-        val searchModel = resolveModel(agent)
-        val isDeepSeekSearchModel = searchModel != null &&
-            searchModel.second.contains("deepseek", ignoreCase = true) &&
-            searchModel.second.contains("flash", ignoreCase = true)
+        val isDeepSeekSearchModel = modelName.contains("deepseek", ignoreCase = true) &&
+            modelName.contains("flash", ignoreCase = true)
         if (_state.value.sessionSearch && !isDeepSeekSearchModel) {
             val searchConfig = loadSearchConfig()
             if (searchConfig != null) {
-                val query = contextPath.lastOrNull { it.role == "user" }?.content.orEmpty()
+                val query = effectivePath.lastOrNull { it.role == "user" }?.content.orEmpty()
                 if (query.isNotBlank()) {
                     runCatching {
                         com.tongzhouweiji.baichuan.core.search.SearchManager.search(searchConfig, query)
@@ -441,7 +558,7 @@ class ChatViewModel(
                 }
             }
         }
-        val messages = PromptAssembler.assemble(
+        val assembled = PromptAssembler.assemble(
             agent = agent,
             path = effectivePath,
             imagesByMessage = imagesByMessage,
@@ -449,34 +566,26 @@ class ChatViewModel(
             summary = summary?.summary,
             searchContext = searchContext,
         )
-        val placeholder = repository.appendAssistantPlaceholder(conversationId, contextLeafId)
-        _state.update {
-            it.copy(
-                isStreaming = true,
-                streamingMessageId = placeholder.id,
-                streamingContent = "",
-                globalError = null,
-            )
-        }
-        refreshPath()
-
-        val resolved = resolveModel(agent)
-        if (resolved == null) {
-            repository.finishMessage(
-                placeholder.id,
-                "failed",
-                "",
-                "未配置模型：请先在「管理 → 相关配置」添加服务商并选择模型",
-            )
-            failGeneration("未配置模型：请先在「管理 → 相关配置」添加服务商并选择模型")
-            refreshPath()
+        if (assembled.error != null) {
+            failGeneration(assembled.error)
             return
         }
-        val (config, modelName) = resolved
+        val notice = when {
+            imageReadFailed -> "部分图片读取失败，已从本次请求中跳过"
+            params.reasoning.isThinking && config.baseUrl.contains("deepseek", ignoreCase = true) ->
+                "深度思考模式已开启：温度参数不生效，关闭深度思考后温度才可用"
+            else -> null
+        }
+        if (notice != null) {
+            _state.update { it.copy(paramNotice = notice) }
+        }
+
+        val placeholder = repository.appendAssistantPlaceholder(conversationId, contextLeafId)
+        beginStreaming(placeholder.id)
+        _state.update { it.copy(modelLabel = modelName) }
+        refreshPath()
+
         val isDeepSeek = config.baseUrl.contains("deepseek", ignoreCase = true)
-        val notice = if (params.reasoning.isThinking && isDeepSeek) "深度思考模式已开启：温度参数不生效，关闭深度思考后温度才可用" else null
-        _state.update { it.copy(modelLabel = modelName, paramNotice = notice) }
-        val adapter = ModelAdapterRegistry.adapterFor(config.protocol)
         val serverTools = if (isDeepSeekSearchModel && _state.value.sessionSearch) {
             buildList {
                 add("deepseek_web_search")
@@ -487,7 +596,7 @@ class ChatViewModel(
         }
         val request = ChatRequest(
             model = modelName,
-            messages = messages,
+            messages = assembled.messages,
             temperature = params.temperature,
             stream = params.stream,
             reasoningEffort = params.reasoning,
@@ -510,7 +619,7 @@ class ChatViewModel(
             }
             try {
                 if (params.stream) {
-                    val result = adapter.streamChat(
+                    val result = adapterStream(
                         config = config,
                         request = request,
                         onDelta = { delta ->
@@ -566,13 +675,12 @@ class ChatViewModel(
                         it.copy(
                             streamingContent = finalText,
                             streamingReasoning = finalReasoning.orEmpty(),
-                            isStreaming = false,
                             streamingMessageId = null,
                             composerState = ComposerState.COMPLETED,
                         )
                     }
                 } else {
-                    val result = adapter.chat(config, request)
+                    val result = ModelAdapterRegistry.adapterFor(config.protocol).chat(config, request)
                     repository.finishMessage(
                         messageId = placeholder.id,
                         status = "done",
@@ -584,13 +692,12 @@ class ChatViewModel(
                         it.copy(
                             streamingContent = result.content,
                             streamingReasoning = result.reasoning.orEmpty(),
-                            isStreaming = false,
                             streamingMessageId = null,
                             composerState = ComposerState.COMPLETED,
                         )
                     }
                 }
-            } catch (e: kotlinx.coroutines.CancellationException) {
+            } catch (e: CancellationException) {
                 repository.finishMessage(
                     placeholder.id, "cancelled", buffer.toString(),
                     reasoning = reasoning.toString().ifBlank { null },
@@ -598,14 +705,13 @@ class ChatViewModel(
                 )
                 _state.update {
                     it.copy(
-                        isStreaming = false,
-                        streamingMessageId = null,
                         composerState = ComposerState.CANCELLED,
+                        streamingMessageId = null,
                     )
                 }
                 throw e
             } catch (e: ModelException) {
-                Logger.w("stream failed: ${e.code} ${e.message}")
+                Logger.w("stream failed: ${e.code}")
                 errorEventDao.insert(
                     ErrorEventEntity(
                         agentId = agent.id,
@@ -613,7 +719,7 @@ class ChatViewModel(
                         messageId = placeholder.id,
                         code = e.code,
                         summary = e.message,
-                        detail = Logger.redact(e.stackTraceToString().take(2000)),
+                        detail = Logger.redact((e.diagnostic ?: e.stackTraceToString()).take(4000)),
                         createdAt = System.currentTimeMillis(),
                     ),
                 )
@@ -624,7 +730,6 @@ class ChatViewModel(
                 )
                 _state.update {
                     it.copy(
-                        isStreaming = false,
                         streamingMessageId = null,
                         globalError = e.message,
                         composerState = ComposerState.FAILED,
@@ -632,6 +737,17 @@ class ChatViewModel(
                 }
             } catch (e: Exception) {
                 Logger.e("stream unexpected", e)
+                errorEventDao.insert(
+                    ErrorEventEntity(
+                        agentId = agent.id,
+                        conversationId = conversationId,
+                        messageId = placeholder.id,
+                        code = "unexpected",
+                        summary = "生成失败，请稍后重试",
+                        detail = Logger.redact(e.stackTraceToString().take(4000)),
+                        createdAt = System.currentTimeMillis(),
+                    ),
+                )
                 repository.finishMessage(
                     placeholder.id, "failed", buffer.toString(), "生成失败，请稍后重试",
                     reasoning = reasoning.toString().ifBlank { null },
@@ -639,7 +755,6 @@ class ChatViewModel(
                 )
                 _state.update {
                     it.copy(
-                        isStreaming = false,
                         streamingMessageId = null,
                         globalError = "生成失败，请稍后重试",
                         composerState = ComposerState.FAILED,
@@ -651,9 +766,56 @@ class ChatViewModel(
         }
     }
 
+    private suspend fun adapterStream(
+        config: ProviderConfig,
+        request: ChatRequest,
+        onDelta: suspend (String) -> Unit,
+        onReasoning: suspend (String) -> Unit,
+    ) = ModelAdapterRegistry.adapterFor(config.protocol).streamChat(
+        config = config,
+        request = request,
+        onDelta = onDelta,
+        onReasoning = onReasoning,
+    )
+
+    /**
+     * 记忆筛选：置顶记忆始终注入；其余记忆只在与当前问题有词面重叠时注入，
+     * 避免所有记忆无差别进入每一轮 system prompt。
+     */
+    private fun selectMemories(all: List<MemoryEntity>, question: String, limit: Int = 8): List<String> {
+        if (all.isEmpty()) return emptyList()
+        val keywords = tokenize(question)
+        return all.asSequence()
+            .filter { memory ->
+                memory.pinned || keywords.any { keyword ->
+                    keyword.length >= 2 && memory.content.contains(keyword, ignoreCase = true)
+                }
+            }
+            .take(limit)
+            .map { it.content.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+    }
+
+    private fun tokenize(text: String): List<String> {
+        if (text.isBlank()) return emptyList()
+        val ascii = Regex("[A-Za-z0-9_]{2,}").findAll(text).map { it.value }.toList()
+        val chineseRuns = Regex("[\\u4e00-\\u9fa5]{2,}").findAll(text).map { it.value }.toList()
+        val bigrams = chineseRuns.flatMap { run ->
+            (0 until run.length - 1).map { index -> run.substring(index, index + 2) }
+        }
+        return (ascii + bigrams).distinct().take(24)
+    }
+
+    private fun latestUserText(path: List<MessageEntity>): String =
+        path.lastOrNull { it.role == "user" }?.content.orEmpty()
+
     /**
      * Agent 闭环：模型自主决定是否调用工具，百川真实执行并把结果回传模型，
      * 直到模型给出最终回复。非流式，界面显示调用状态。
+     *
+     * v0.4.0 默认关闭（AppFeatureFlags.agentExecutionEnabled=false），普通用户
+     * 没有任何 UI 入口可以触发；保留代码与旧数据兼容，未来评估后再开放。
      */
     private suspend fun runAgent(
         conversationId: Long,
@@ -662,34 +824,25 @@ class ChatViewModel(
     ) {
         val resolved = resolveModel(agent)
         if (resolved == null) {
-            val placeholder = repository.appendAssistantPlaceholder(conversationId, contextPath.lastOrNull()?.id)
-            repository.finishMessage(placeholder.id, "failed", "", "未配置模型，无法使用 Agent")
-            refreshPath()
+            failGeneration("未配置模型，无法使用 Agent")
             return
         }
         val (config, modelName) = resolved
         val userText = contextPath.lastOrNull { it.role == "user" }?.content.orEmpty()
         if (userText.isBlank()) {
-            refreshPath()
+            failGeneration("当前对话没有可执行的用户消息")
             return
         }
         val systemPrompt = buildString {
             if (agent.systemPrompt.isNotBlank()) append(agent.systemPrompt).append("\n\n")
             if (agent.persona.isNotBlank()) append("人设：").append(agent.persona)
         }
-        // 传递当前分支的历史消息（不含本次 user 文本），让 Agent 拥有对话上下文。
         val history = contextPath.dropLast(1)
             .filter { it.role == "user" || it.role == "assistant" }
-            .map { com.tongzhouweiji.baichuan.model.ChatMessage(role = it.role, content = it.content) }
+            .map { ChatMessage(role = it.role, content = it.content) }
         val placeholder = repository.appendAssistantPlaceholder(conversationId, contextPath.lastOrNull()?.id)
-        _state.update {
-            it.copy(
-                isStreaming = true,
-                streamingMessageId = placeholder.id,
-                streamingContent = "正在调用工具…",
-                globalError = null,
-            )
-        }
+        beginStreaming(placeholder.id)
+        _state.update { it.copy(streamingContent = "正在调用工具…") }
         refreshPath()
         try {
             val result = app.container.agentRunner.run(
@@ -705,12 +858,11 @@ class ChatViewModel(
             )
             val text = result.text.ifBlank { "（Agent 已完成，但没有返回文本内容）" }
             repository.finishMessage(placeholder.id, "done", text)
-            _state.update { it.copy(streamingContent = text, isStreaming = false, streamingMessageId = null) }
-        } catch (e: kotlinx.coroutines.CancellationException) {
+            _state.update { it.copy(streamingContent = text, streamingMessageId = null, composerState = ComposerState.COMPLETED) }
+        } catch (e: CancellationException) {
             repository.finishMessage(placeholder.id, "cancelled", "", "已停止")
             _state.update {
                 it.copy(
-                    isStreaming = false,
                     streamingMessageId = null,
                     composerState = ComposerState.CANCELLED,
                 )
@@ -718,8 +870,19 @@ class ChatViewModel(
             throw e
         } catch (e: Exception) {
             Logger.e("agent run failed", e)
-            repository.finishMessage(placeholder.id, "failed", "", e.message ?: "Agent 执行失败")
-            failGeneration(e.message ?: "Agent 执行失败")
+            errorEventDao.insert(
+                ErrorEventEntity(
+                    agentId = agent.id,
+                    conversationId = conversationId,
+                    messageId = placeholder.id,
+                    code = "agent_failed",
+                    summary = "Agent 执行失败，请稍后重试",
+                    detail = Logger.redact(e.stackTraceToString().take(4000)),
+                    createdAt = System.currentTimeMillis(),
+                ),
+            )
+            repository.finishMessage(placeholder.id, "failed", "", "Agent 执行失败，请稍后重试")
+            failGeneration("Agent 执行失败，请稍后重试")
         } finally {
             withContext(NonCancellable) { refreshPath() }
         }

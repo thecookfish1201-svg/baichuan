@@ -96,6 +96,7 @@ import com.tongzhouweiji.baichuan.core.db.entity.AttachmentEntity
 import com.tongzhouweiji.baichuan.core.db.entity.MessageEntity
 import com.tongzhouweiji.baichuan.core.media.AttachmentStore
 import com.tongzhouweiji.baichuan.core.media.TtsPlayer
+import com.tongzhouweiji.baichuan.ui.component.MarkdownText
 import com.tongzhouweiji.baichuan.ui.theme.ChatGreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -193,7 +194,7 @@ fun ChatScreen(
             androidx.compose.material3.AlertDialog(
                 onDismissRequest = { pendingDeleteId = null },
                 title = { androidx.compose.material3.Text("删除消息") },
-                text = { androidx.compose.material3.Text("删除后该消息及其分支将无法恢复，确定删除？") },
+                text = { androidx.compose.material3.Text("删除这条消息及其后续回复？该分支会回退到上一条消息，其他分支不受影响。") },
                 confirmButton = {
                     androidx.compose.material3.TextButton(onClick = {
                         viewModel.deleteMessage(id)
@@ -254,6 +255,8 @@ fun ChatScreen(
                 input = state.input,
                 pending = state.pendingAttachments,
                 composerState = state.composerState,
+                notice = state.paramNotice,
+                onDismissNotice = viewModel::clearParamNotice,
                 deepSeekStyle = style == "deepseek",
                 onInputChange = viewModel::updateInput,
                 onSend = viewModel::send,
@@ -282,7 +285,6 @@ fun ChatScreen(
                     Column(Modifier.fillMaxWidth()) {
                     MessageItem(
                         message = display,
-                        reasoning = if (message.id == state.streamingMessageId) state.streamingReasoning else message.reasoningContent,
                         reasoningMs = message.reasoningMs,
                         attachments = state.attachmentsByMessage[message.id].orEmpty(),
                         attachmentStore = app.container.attachmentStore,
@@ -335,7 +337,6 @@ fun ChatScreen(
 @Composable
 private fun MessageItem(
     message: MessageEntity,
-    reasoning: String?,
     reasoningMs: Long?,
     attachments: List<AttachmentEntity>,
     attachmentStore: AttachmentStore,
@@ -348,6 +349,7 @@ private fun MessageItem(
     onCycleBranch: (Int) -> Unit,
 ) {
     val isUser = message.role == "user"
+    val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
 
@@ -366,8 +368,8 @@ private fun MessageItem(
             Spacer(Modifier.width(4.dp))
         }
         Column(horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
-            if (!isUser && !reasoning.isNullOrBlank()) {
-                ReasoningPanel(reasoning = reasoning, durationMs = reasoningMs, streaming = message.status == "streaming")
+            if (!isUser && (message.status == "streaming" || reasoningMs != null)) {
+                ReasoningStatus(streaming = message.status == "streaming", durationMs = reasoningMs)
             }
             Box {
                 Column(
@@ -389,14 +391,31 @@ private fun MessageItem(
                         ),
                 ) {
                     if (message.content.isNotEmpty() || message.status == "streaming") {
-                        Text(
-                            text = if (message.status == "streaming" && message.content.isEmpty()) "正在生成…" else message.content,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = if (isUser && !deepSeekStyle) Color.White else MaterialTheme.colorScheme.onSurface,
-                        )
+                        if (message.status == "streaming" && message.content.isEmpty()) {
+                            Text(
+                                text = "正在生成…",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = if (isUser && !deepSeekStyle) Color.White
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            MarkdownText(
+                                text = message.content,
+                                fontSize = 17,
+                                lineHeight = 26,
+                                color = if (isUser && !deepSeekStyle) Color.White
+                                else MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
                     }
                 }
                 DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    DropdownMenuItem(text = { Text("复制") }, onClick = {
+                        menuExpanded = false
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("message", message.content))
+                        Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                    })
                     if (isUser) {
                         DropdownMenuItem(text = { Text("编辑并重发") }, onClick = {
                             menuExpanded = false
@@ -536,6 +555,8 @@ private fun ChatInputBar(
     input: String,
     pending: List<PendingAttachment>,
     composerState: ComposerState,
+    notice: String?,
+    onDismissNotice: () -> Unit,
     deepSeekStyle: Boolean,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
@@ -552,6 +573,26 @@ private fun ChatInputBar(
             .imePadding()
             .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {
+        if (!notice.isNullOrBlank()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                    .padding(start = 10.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = notice,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onDismissNotice, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "关闭提示", modifier = Modifier.size(14.dp))
+                }
+            }
+        }
         if (pending.isNotEmpty()) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 6.dp)) {
                 pending.forEachIndexed { index, attachment ->
@@ -610,7 +651,14 @@ private fun ChatInputBar(
                 ),
             )
             Spacer(Modifier.width(6.dp))
-            if (composerState == ComposerState.STREAMING || composerState == ComposerState.STOP_REQUESTED) {
+            if (composerState == ComposerState.PREPARING) {
+                Text(
+                    text = "准备中…",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 12.dp),
+                )
+            } else if (composerState == ComposerState.STREAMING || composerState == ComposerState.STOP_REQUESTED) {
                 TextButton(onClick = onStop) {
                     Text(if (composerState == ComposerState.STOP_REQUESTED) "正在停止…" else "停止")
                 }
@@ -679,44 +727,16 @@ private fun PillButton(icon: ImageVector, label: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ReasoningPanel(reasoning: String, durationMs: Long?, streaming: Boolean) {
-    var expanded by remember { mutableStateOf(false) }
-    Column(Modifier.padding(bottom = 4.dp)) {
-        Row(
-            modifier = Modifier.clickable { expanded = !expanded },
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = when {
-                    streaming -> "思考中…"
-                    durationMs != null -> "已思考（用时 ${(durationMs / 1000).coerceAtLeast(1)} 秒）"
-                    else -> "已思考"
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Icon(
-                imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
-        }
-        if (expanded) {
-            Row(Modifier.padding(top = 6.dp)) {
-                Box(
-                    Modifier
-                        .width(2.dp)
-                        .height(IntrinsicSize.Max)
-                        .background(MaterialTheme.colorScheme.outline),
-                )
-                Text(
-                    text = reasoning,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 10.dp),
-                )
-            }
-        }
+private fun ReasoningStatus(streaming: Boolean, durationMs: Long?) {
+    val label = when {
+        streaming -> "思考中…"
+        durationMs != null -> "已思考（用时 ${(durationMs / 1000).coerceAtLeast(1)} 秒）"
+        else -> "已思考"
     }
+    Text(
+        text = label,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(bottom = 4.dp, start = 2.dp),
+    )
 }

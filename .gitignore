@@ -32,3 +32,6 @@ Thumbs.db
 
 # 本机构建适配（aarch64 容器专用，不随源码分发）
 tools/aapt2/aapt2.real
+
+# v0.4.0 资料包（本地审计输入，不随源码分发）
+inbox/

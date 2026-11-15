@@ -26,6 +26,10 @@ class AppContainer(context: Context) {
         throw IllegalStateException("数据库打开失败，原始数据已保留", lastError)
     }
 
+    /** 版本级功能开关（Agent 执行等）。 */
+    val featureFlags: AppFeatureFlags get() = AppFeatureFlags
+
+
     val agentDao by lazy { database.agentDao() }
     val conversationDao by lazy { database.conversationDao() }
     val messageDao by lazy { database.messageDao() }
