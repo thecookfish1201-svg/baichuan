@@ -18,8 +18,8 @@ com.tongzhouweiji.baichuan
 
 ## 数据流
 
-1. UI 通过 ViewModel 读取 StateFlow 状态。
-2. ViewModel 调用 ChatRepository / DAO 更新数据库。
+1. UI 通过 ViewModel 读取 StateFlow 状态；`ComposerState` 是唯一的任务状态事实源。
+2. ViewModel 调用 ChatRepository / DAO 更新数据库；消息树完整性由 `MessageTree` 统一校验。
 3. Room 的 Flow 触发界面刷新（消息、分支、附件）。
 4. 模型请求经 `ModelAdapter` 统一发出，供应商差异在适配层转换。
 
@@ -27,7 +27,7 @@ com.tongzhouweiji.baichuan
 
 - Room 单库 `baichuan.db`，当前版本 v6。
 - 显式迁移：v1→v2→v3→v4→v5→v6，覆盖思考链、附件、备份、插件、Agent。
-- 兜底：无法迁移的旧库会清库重建，保证应用可启动（开发期策略）。
+- 兜底：迁移失败不删库、不清数据；打开数据库失败时展示恢复界面并允许重试。
 - 关键表：agents、conversations、messages（消息树）、providers、models、memories、error_events、plugins、mcp_servers、agent_consents/agent_runs/agent_actions。
 
 ## 消息与分支
@@ -50,14 +50,14 @@ com.tongzhouweiji.baichuan
 - 配置型插件可提供主题与角色卡预设；代码型插件不执行。
 - 插件数据与核心库隔离。
 
-## MCP
+## MCP（v0.4.x 暂停执行）
 
-- 服务器登记 + 连接状态 + 工具清单缓存（initialize / tools.list）。
-- 凭据加密，调用记录只存摘要。
+- 服务器登记 + 连接状态 + 工具清单缓存（initialize / tools.list）的代码保留。
+- v0.4.x 不向普通用户开放 MCP 工具执行，管理页不展示实验入口。
 
-## Agent（实验性）
+## Agent（v0.4.x 暂停执行）
 
-- 按智能体授权：`agent_consents.agentId`，撤销即删除授权。
-- 免责说明模态 + 10 秒门槛。
-- Tool Calling 闭环：工具定义随请求下发 → 模型返回 tool_calls → 服务层校验授权并真实执行 → 结果作为 tool 消息回传 → 循环直至最终回复。
-- 每次运行写 `agent_runs`，每次工具调用写 `agent_actions`（参数/结果脱敏）。
+- `AppFeatureFlags.agentExecutionEnabled=false`：服务层硬拦截，旧授权与旧 `agentMode` 都不能启动工具调用。
+- 助手、人设、会话、授权记录、运行记录与备份数据保留；聊天页不再提供 Agent 模式入口。
+- 未来重新开放前，需要重新评估权限模型、免责门槛与用户理解成本。
+- 设计细节见 `docs/Agent安全设计.md`（历史设计，当前不开放）。

@@ -4,6 +4,68 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [0.4.0] - 2026-11-15
+
+核心对话与体验收敛版（按《产品章程 v1.0》与 v0.4.0 任务单执行）。
+
+### 基线（P0 工程）
+
+- 建立 `docs/v0.4.0_BASELINE_AUDIT.md`：本地 HEAD、v0.3.1 APK、GitHub 标签三方对照
+- 确认 v0.3.1 APK 由本地完整源码构建；公开标签源码缺少 11 个文件改动，无法复现 APK
+- 新增 `scripts/release.sh`：发布前 dirty-tree 检查、构建、记录 commit/版本/SHA-256
+
+### 聊天内核（P0）
+
+- `ComposerState` 成为唯一任务状态事实源，`isStreaming` 改为派生值
+- `regenerate` / `editAndResend` 进入统一任务入口：发送前同步进入 PREPARING，连点只产生一个请求
+- PREPARING / STREAMING / STOP_REQUESTED 均可停止；无活动任务时停止为空操作
+- 消息树：`MessageTree` 校验父节点缺失、已删除祖先、跨会话引用与循环；失败返回 invalid，不再静默截断
+- 删除消息改为级联软删除当前分支后代，活动叶子回退到最近合法祖先，其他分支保留
+- `PromptAssembler` 增加 role 序列校验；第一条非 system 必须为 user，孤立 assistant/tool 本地拦截
+- 图片-only 消息保留并携带图片 payload；空白且无附件的消息才跳过
+- reasoning 原文本不再进入普通 UI，只显示「思考中…／已思考」；数据库字段保留不删
+- 错误映射：`ModelException` 拆分用户文案与脱敏诊断；HTTP 400/401/403/404/413/429/5xx 与流内 error 事件均有可行动中文提示
+- 流式 `error` 事件不再被静默忽略（此前会出现「空回复但显示成功」）
+
+### 内容与阅读（P1）
+
+- 微信式气泡接入统一 Markdown 渲染：粗体、斜体、行内代码、代码块（横向滚动）、标题、有序/无序列表、引用、链接
+- 流式未闭合 `**` 不再裸露标记
+- 用户离开底部时显示「回到最新」；上滑阅读不被强制拉回
+- 消息操作补齐复制、分享、编辑并重发、重新生成、朗读、删除
+
+### 产品收敛（P1）
+
+- 删除 DeepSeek 式独立聊天页面（`DeepSeekChat.kt`）与外观页选项；旧 `ui_style=deepseek` 启动时幂等迁移为 `wechat`
+- 保留 DeepSeek 模型适配、联网搜索、TTS、推理参数（服务能力与 UI 样式解耦）
+- 暂停 Agent 自主工具执行：新增 `AppFeatureFlags.agentExecutionEnabled=false`；服务层硬拦截；聊天页移除 Agent 模式入口
+- 保留智能体/助手、人设、会话、权限记录与旧数据；备份仍兼容 agent 类别
+- 搜索/深度思考迁入统一输入区能力胶囊；未配置搜索时给出明确提示
+- 底部导航移除占位「发现」页；管理页隐藏黑名单、权限、MCP 实验入口；我的页移除伪「设置」、Agent 运行记录
+- 关于页接通：版本、定位、MIT、项目地址；消息首页非空时也提供 `+` 新建入口
+
+### 朗读（P1）
+
+- 云端 TTS 失败不再假装成功：播放结果真实返回，失败回退系统 TTS 并提示原因
+- 播放改为异步 prepare，超时 15 秒，避免主线程阻塞
+- 修复流式 WAV 头长度占位（RIFF/data size 为 0 或 0xFFFFFFFF）导致无法播放
+- 按计费字符截断（汉字 2、其他 1，上限 10000），避免长中文文本被服务端拒绝
+- 外观页显示云端朗读配置状态（未开启/缺服务商/缺 Key/已就绪）
+
+### 测试
+
+- 新增 23 项 JVM 单元测试并全部通过：
+  - `MessageTreeTest` 8 项（正常链、父缺失、已删除祖先、跨会话、循环、后代、回退）
+  - `PromptAssemblerTest` 6 项（图片-only、空白跳过、首条 assistant、连续 assistant、正常序列、记忆软上下文）
+  - `ErrorMappingTest` 5 项（认证错误不泄露 body、非法 role 文案、429、内容风险、流内错误）
+  - `DeepSeekTtsTest` 4 项（计费截断、长中文、WAV 头修正、非 WAV 原样）
+
+### 已知限制
+
+- 真机验收矩阵（浅/深色、360dp、1.3x 字号、IME、TalkBack、滚动、附件、分支、TTS 听感）**NOT RUN**：容器无 Android 运行时，无障碍与设备 shell 通道不可用
+- ViewModel / Compose UI / Repository 层自动化测试未建立（需要 Android 测试运行时或 Robolectric），如实记录
+- 发布 APK 仍为 debug 签名；release 签名与正式分发在后续版本
+
 ## [0.3.1] - 2026-11-15
 
 交互稳定性整改（按 v0.3.1 任务单 + 鲸鱼娘交互规格）。
