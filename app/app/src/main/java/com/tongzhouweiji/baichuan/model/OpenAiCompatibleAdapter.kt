@@ -354,7 +354,7 @@ object OpenAiCompatibleAdapter : ModelAdapter {
     /**
      * HTTP 错误映射：用户只看到可行动的文案；原始响应体、request_id 与供应商错误只进诊断。
      */
-    private fun httpError(code: Int, body: String, requestId: String? = null): ModelException {
+    internal fun httpError(code: Int, body: String, requestId: String? = null): ModelException {
         val serverMessage = runCatching {
             json.parseToJsonElement(body).jsonObject["error"]?.jsonObject?.get("message")
                 ?.jsonPrimitive?.contentOrNull
@@ -383,7 +383,7 @@ object OpenAiCompatibleAdapter : ModelAdapter {
     }
 
     /** 流内错误文案映射，避免把供应商英文协议错误直接展示给用户。 */
-    private fun streamErrorMessage(raw: String): String = when {
+    internal fun streamErrorMessage(raw: String): String = when {
         raw.contains("must follow a user message", ignoreCase = true) ->
             "当前对话分支不完整，无法继续发送。请切换到其他版本，或新建对话后重试。"
         raw.contains("rate limit", ignoreCase = true) || raw.contains("too many", ignoreCase = true) ->

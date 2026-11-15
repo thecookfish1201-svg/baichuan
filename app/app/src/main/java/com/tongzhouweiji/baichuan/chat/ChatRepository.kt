@@ -52,31 +52,8 @@ class ChatRepository(private val db: BaichuanDatabase) {
      * 已删除祖先、跨会话父节点和循环引用；任何异常都返回 invalid，而不是静默截断。
      */
     suspend fun pathTo(conversationId: Long, leafId: Long?): MessagePath {
-        if (leafId == null) return MessagePath(emptyList(), valid = true)
         val all = db.messageDao().listAllByConversation(conversationId)
-        val byId = all.associateBy { it.id }
-        val leaf = byId[leafId]
-            ?: return MessagePath(emptyList(), valid = false, reason = "当前分支的末端消息不存在")
-        val path = ArrayDeque<MessageEntity>()
-        val guard = mutableSetOf<Long>()
-        var current: MessageEntity? = leaf
-        while (current != null) {
-            if (!guard.add(current.id)) {
-                return MessagePath(emptyList(), valid = false, reason = "消息树存在循环引用")
-            }
-            if (current.deletedAt != null) {
-                return MessagePath(emptyList(), valid = false, reason = "当前分支包含已删除消息")
-            }
-            path.addFirst(current)
-            val parentId = current.parentId ?: break
-            val parent = byId[parentId]
-                ?: return MessagePath(emptyList(), valid = false, reason = "当前分支的上一条消息缺失")
-            if (parent.conversationId != conversationId) {
-                return MessagePath(emptyList(), valid = false, reason = "消息树跨会话引用")
-            }
-            current = parent
-        }
-        return MessagePath(path.toList(), valid = true)
+        return MessageTree.pathTo(all, conversationId, leafId)
     }
 
     suspend fun appendMessage(
@@ -159,16 +136,7 @@ class ChatRepository(private val db: BaichuanDatabase) {
         val byId = all.associateBy { it.id }
         val target = byId[messageId] ?: return
         val now = System.currentTimeMillis()
-        val descendants = mutableListOf<MessageEntity>()
-        val stack = ArrayDeque<MessageEntity>()
-        all.filter { it.parentId == messageId }.forEach { stack.addLast(it) }
-        val seen = mutableSetOf<Long>()
-        while (stack.isNotEmpty()) {
-            val current = stack.removeLast()
-            if (!seen.add(current.id)) continue
-            descendants.add(current)
-            all.filter { it.parentId == current.id }.forEach { stack.addLast(it) }
-        }
+        val descendants = MessageTree.descendants(all, messageId)
         val ids = listOf(messageId) + descendants.map { it.id }
         db.messageDao().softDeleteMany(ids, now)
 
@@ -177,37 +145,19 @@ class ChatRepository(private val db: BaichuanDatabase) {
         if (activeLeaf == messageId || descendants.any { it.id == activeLeaf }) {
             db.conversationDao().updateActiveLeaf(
                 conversationId,
-                nearestValidAncestorId(target, byId),
+                MessageTree.nearestValidAncestorId(target, byId),
                 now,
             )
         }
     }
 
-    /** 找最近一个未删除的祖先；没有则返回 null（空会话）。 */
-    private fun nearestValidAncestorId(
-        message: MessageEntity,
-        byId: Map<Long, MessageEntity>,
-    ): Long? {
-        var current = message.parentId?.let { byId[it] }
-        while (current != null) {
-            if (current.deletedAt == null) return current.id
-            current = current.parentId?.let { byId[it] }
-        }
-        return null
-    }
-
     /** 历史数据修复：活动叶子无效时回退到最新一条未删除消息。 */
     suspend fun repairActiveLeaf(conversationId: Long): Long? {
         val conversation = db.conversationDao().findById(conversationId) ?: return null
-        val existing = db.messageDao().findById(conversation.activeLeafMessageId ?: -1)
-        if (existing != null && existing.deletedAt == null) return existing.id
-        val fallback = db.messageDao().listByConversation(conversationId).lastOrNull()
-        db.conversationDao().updateActiveLeaf(
-            conversationId,
-            fallback?.id,
-            System.currentTimeMillis(),
-        )
-        return fallback?.id
+        val all = db.messageDao().listAllByConversation(conversationId)
+        val fallback = MessageTree.repairLeaf(all, conversation.activeLeafMessageId)
+        db.conversationDao().updateActiveLeaf(conversationId, fallback, System.currentTimeMillis())
+        return fallback
     }
 
     /** 切换到某条消息所在分支：以该消息最新的后代作为当前末端。 */
