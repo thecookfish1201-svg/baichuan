@@ -78,10 +78,6 @@ fun AgentEditScreen(
     var reasoningMenu by remember { mutableStateOf(false) }
     var presetMenu by remember { mutableStateOf(false) }
     var presets by remember { mutableStateOf<List<com.tongzhouweiji.baichuan.core.plugin.PluginManager.PresetWithOwner>>(emptyList()) }
-    var authorizedLevel by remember { mutableStateOf<String?>(null) }
-    var showPermissionDialog by remember { mutableStateOf(false) }
-    var showRevokeConfirm by remember { mutableStateOf(false) }
-    var disclaimer by remember { mutableStateOf("") }
 
     val models by app.container.providerDao.observeAllModels().collectAsState(initial = emptyList())
     val json = remember { Json { ignoreUnknownKeys = true } }
@@ -103,18 +99,6 @@ fun AgentEditScreen(
             }
         }
         loaded = true
-    }
-
-    LaunchedEffect(Unit) {
-        disclaimer = runCatching {
-            context.assets.open("agent_disclaimer.txt").bufferedReader().readText()
-        }.getOrDefault("免责说明加载失败")
-    }
-
-    LaunchedEffect(agentId) {
-        if (agentId != 0L) {
-            authorizedLevel = app.container.agentManager.levelOf(agentId)
-        }
     }
 
     Scaffold(
@@ -308,27 +292,6 @@ fun AgentEditScreen(
                 OutlinedButton(onClick = { onOpenScheduled(agentId) }, modifier = Modifier.fillMaxWidth()) {
                     Text("主动消息")
                 }
-                Spacer(Modifier.height(12.dp))
-                Text("Agent 权限", style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    text = if (authorizedLevel == null) "未授权：该智能体不能调用 Agent 能力" else "已授权（等级 $authorizedLevel）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (authorizedLevel == null) MaterialTheme.colorScheme.onSurfaceVariant
-                    else MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.height(6.dp))
-                if (authorizedLevel == null) {
-                    OutlinedButton(
-                        onClick = { showPermissionDialog = true },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("授予 Agent 权限") }
-                } else {
-                    OutlinedButton(
-                        onClick = { showRevokeConfirm = true },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("撤销 Agent 权限") }
-                }
-                Spacer(Modifier.height(12.dp))
             }
             Text(
                 text = "温度在思考模式开启时不生效（官方限制）：关闭深度思考后温度才可用。推理强度按官方取值 low / high / max 映射，跟随默认由服务端决定。",
@@ -338,36 +301,5 @@ fun AgentEditScreen(
         }
     }
 
-    if (showPermissionDialog) {
-        com.tongzhouweiji.baichuan.ui.component.AgentPermissionDialog(
-            agentName = name.ifBlank { "该智能体" },
-            disclaimer = disclaimer,
-            onDismiss = { showPermissionDialog = false },
-            onConfirm = { level ->
-                scope.launch {
-                    app.container.agentManager.authorize(agentId, level)
-                    authorizedLevel = level
-                    showPermissionDialog = false
-                }
-            },
-        )
-    }
 
-    if (showRevokeConfirm) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showRevokeConfirm = false },
-            title = { Text("撤销 Agent 权限") },
-            text = { Text("撤销后「${name}」将无法调用 Agent 能力，已产生的运行记录保留。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    scope.launch {
-                        app.container.agentManager.revoke(agentId)
-                        authorizedLevel = null
-                        showRevokeConfirm = false
-                    }
-                }) { Text("撤销", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = { TextButton(onClick = { showRevokeConfirm = false }) { Text("取消") } },
-        )
-    }
 }

@@ -96,6 +96,7 @@ import com.tongzhouweiji.baichuan.core.db.entity.AttachmentEntity
 import com.tongzhouweiji.baichuan.core.db.entity.MessageEntity
 import com.tongzhouweiji.baichuan.core.media.AttachmentStore
 import com.tongzhouweiji.baichuan.core.media.TtsPlayer
+import com.tongzhouweiji.baichuan.core.tts.TtsSpeakResult
 import com.tongzhouweiji.baichuan.ui.component.MarkdownText
 import com.tongzhouweiji.baichuan.ui.theme.ChatGreen
 import kotlinx.coroutines.Dispatchers
@@ -112,14 +113,9 @@ fun ChatScreen(
     val app = context.applicationContext as BaichuanApplication
     val viewModel: ChatViewModel = viewModel(factory = ChatViewModel.Factory(app, agentId))
     val state by viewModel.state.collectAsState()
-    val style by app.container.settingDao.observe("ui_style").collectAsState(initial = null)
     val listState = rememberLazyListState()
 
-    var agentAuthorized by remember { mutableStateOf(false) }
     var pendingDeleteId by remember { mutableStateOf<Long?>(null) }
-    LaunchedEffect(agentId) {
-        agentAuthorized = app.container.agentManager.isAuthorized(agentId)
-    }
 
     val scope = rememberCoroutineScope()
     val tts = remember { TtsPlayer(context) }
@@ -153,64 +149,6 @@ fun ChatScreen(
         }
     }
 
-    if (style == null) {
-        // 设置尚未读取完成时先留空，避免先闪一帧微信式再切换。
-        Box(Modifier.fillMaxSize())
-        return
-    }
-    if (style == "deepseek") {
-        DeepSeekChat(
-            state = state,
-            attachmentStore = app.container.attachmentStore,
-            onBack = onBack,
-            onInputChange = viewModel::updateInput,
-            onSend = viewModel::send,
-            onStop = viewModel::stopGenerating,
-            onPickImage = {
-                imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            },
-            onPickFile = { filePicker.launch(arrayOf("*/*")) },
-            onRemoveAttachment = viewModel::removePendingAttachment,
-            onRegenerate = viewModel::regenerate,
-            onCopy = { text ->
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(ClipData.newPlainText("message", text))
-            },
-            onSpeak = { text ->
-                scope.launch {
-                    val played = runCatching { app.container.ttsService.speak(text) }.getOrDefault(false)
-                    if (!played) tts.speak(text)
-                }
-            },
-            onToggleDeepThinking = viewModel::toggleDeepThinking,
-            onToggleSearch = viewModel::toggleSearch,
-            agentAuthorized = agentAuthorized,
-            agentMode = state.agentMode,
-            onToggleAgentMode = viewModel::toggleAgentMode,
-            onClearError = viewModel::clearError,
-            onDelete = { pendingDeleteId = it },
-        )
-        pendingDeleteId?.let { id ->
-            androidx.compose.material3.AlertDialog(
-                onDismissRequest = { pendingDeleteId = null },
-                title = { androidx.compose.material3.Text("删除消息") },
-                text = { androidx.compose.material3.Text("删除这条消息及其后续回复？该分支会回退到上一条消息，其他分支不受影响。") },
-                confirmButton = {
-                    androidx.compose.material3.TextButton(onClick = {
-                        viewModel.deleteMessage(id)
-                        pendingDeleteId = null
-                    }) { androidx.compose.material3.Text("删除", color = MaterialTheme.colorScheme.error) }
-                },
-                dismissButton = {
-                    androidx.compose.material3.TextButton(onClick = { pendingDeleteId = null }) {
-                        androidx.compose.material3.Text("取消")
-                    }
-                },
-            )
-        }
-        return
-    }
-
     val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
     LaunchedEffect(state.globalError) {
         val message = state.globalError ?: return@LaunchedEffect
@@ -230,16 +168,6 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    if (agentAuthorized) {
-                        IconButton(onClick = viewModel::toggleAgentMode) {
-                            Icon(
-                                imageVector = Icons.Default.Build,
-                                contentDescription = if (state.agentMode) "关闭 Agent 模式" else "开启 Agent 模式",
-                                tint = if (state.agentMode) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
                     IconButton(onClick = onOpenAgentSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "智能体设置")
                     }
@@ -257,7 +185,6 @@ fun ChatScreen(
                 composerState = state.composerState,
                 notice = state.paramNotice,
                 onDismissNotice = viewModel::clearParamNotice,
-                deepSeekStyle = style == "deepseek",
                 onInputChange = viewModel::updateInput,
                 onSend = viewModel::send,
                 onStop = viewModel::stopGenerating,
@@ -288,17 +215,28 @@ fun ChatScreen(
                         reasoningMs = message.reasoningMs,
                         attachments = state.attachmentsByMessage[message.id].orEmpty(),
                         attachmentStore = app.container.attachmentStore,
-                        deepSeekStyle = style == "deepseek",
                         branch = state.branchInfo[message.id],
                         onRegenerate = { viewModel.regenerate(message.id) },
                         onEdit = { viewModel.editAndResend(message.id, it) },
                         onDelete = { pendingDeleteId = message.id },
                         onSpeak = {
                             scope.launch {
-                                val played = runCatching {
+                                val result = runCatching {
                                     app.container.ttsService.speak(message.content)
-                                }.getOrDefault(false)
-                                if (!played) tts.speak(message.content)
+                                }.getOrElse {
+                                    TtsSpeakResult.Failed("云端朗读失败，已切换系统朗读")
+                                }
+                                when (result) {
+                                    TtsSpeakResult.Played -> Unit
+                                    is TtsSpeakResult.Unavailable -> {
+                                        tts.speak(message.content)
+                                        snackbarHostState.showSnackbar("云端朗读未启用：${result.reason}")
+                                    }
+                                    is TtsSpeakResult.Failed -> {
+                                        tts.speak(message.content)
+                                        snackbarHostState.showSnackbar(result.userMessage)
+                                    }
+                                }
                             }
                         },
                         onCycleBranch = { delta -> viewModel.cycleBranch(message.id, delta) },
@@ -331,6 +269,22 @@ fun ChatScreen(
         }
     }
 
+    pendingDeleteId?.let { id ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteId = null },
+            title = { Text("删除消息") },
+            text = { Text("删除这条消息及其后续回复？该分支会回退到上一条消息，其他分支不受影响。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteMessage(id)
+                    pendingDeleteId = null
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteId = null }) { Text("取消") }
+            },
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -340,7 +294,6 @@ private fun MessageItem(
     reasoningMs: Long?,
     attachments: List<AttachmentEntity>,
     attachmentStore: AttachmentStore,
-    deepSeekStyle: Boolean,
     branch: BranchInfo?,
     onRegenerate: () -> Unit,
     onEdit: (String) -> Unit,
@@ -376,26 +329,18 @@ private fun MessageItem(
                     modifier = Modifier
                         .widthIn(max = 280.dp)
                         .background(
-                            color = when {
-                                isUser && deepSeekStyle -> MaterialTheme.colorScheme.surfaceVariant
-                                isUser -> ChatGreen
-                                deepSeekStyle -> Color.Transparent
-                                else -> MaterialTheme.colorScheme.surface
-                            },
-                            shape = if (deepSeekStyle) RoundedCornerShape(14.dp) else RoundedCornerShape(10.dp),
+                            color = if (isUser) ChatGreen else MaterialTheme.colorScheme.surface,
+                            shape = RoundedCornerShape(10.dp),
                         )
                         .combinedClickable(onClick = {}, onLongClick = { menuExpanded = true })
-                        .padding(
-                            horizontal = if (deepSeekStyle && !isUser) 4.dp else 12.dp,
-                            vertical = if (deepSeekStyle && !isUser) 2.dp else 9.dp,
-                        ),
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
                 ) {
                     if (message.content.isNotEmpty() || message.status == "streaming") {
                         if (message.status == "streaming" && message.content.isEmpty()) {
                             Text(
                                 text = "正在生成…",
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = if (isUser && !deepSeekStyle) Color.White
+                                color = if (isUser) Color.White
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         } else {
@@ -403,7 +348,7 @@ private fun MessageItem(
                                 text = message.content,
                                 fontSize = 17,
                                 lineHeight = 26,
-                                color = if (isUser && !deepSeekStyle) Color.White
+                                color = if (isUser) Color.White
                                 else MaterialTheme.colorScheme.onSurface,
                             )
                         }
@@ -440,23 +385,6 @@ private fun MessageItem(
             attachments.forEach { attachment ->
                 Box(Modifier.padding(top = 4.dp)) {
                     AttachmentPreview(attachment = attachment, store = attachmentStore)
-                }
-            }
-            if (!isUser && deepSeekStyle && message.status != "streaming") {
-                val context = LocalContext.current
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(
-                        onClick = {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("message", message.content))
-                            android.widget.Toast.makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT).show()
-                        },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                    ) { Text("复制", style = MaterialTheme.typography.labelSmall) }
-                    TextButton(
-                        onClick = onRegenerate,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                    ) { Text("重新生成", style = MaterialTheme.typography.labelSmall) }
                 }
             }
             if (message.status == "failed" && !message.errorSummary.isNullOrBlank()) {
@@ -557,7 +485,6 @@ private fun ChatInputBar(
     composerState: ComposerState,
     notice: String?,
     onDismissNotice: () -> Unit,
-    deepSeekStyle: Boolean,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -674,55 +601,6 @@ private fun ChatInputBar(
                 }
             }
         }
-        if (deepSeekStyle) {
-            val context = LocalContext.current
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                PillButton(
-                    icon = Icons.Default.Star,
-                    label = "深度思考",
-                    onClick = { Toast.makeText(context, "深度思考将在阶段三接入", Toast.LENGTH_SHORT).show() },
-                )
-                PillButton(
-                    icon = Icons.Default.Search,
-                    label = "智能搜索",
-                    onClick = { Toast.makeText(context, "智能搜索将在阶段三接入", Toast.LENGTH_SHORT).show() },
-                )
-            }
-            Text(
-                text = "回答由 AI 生成，仅供参考",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun PillButton(icon: ImageVector, label: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(50))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(16.dp),
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-        )
     }
 }
 

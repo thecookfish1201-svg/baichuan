@@ -61,6 +61,9 @@ fun MessagesScreen(
             CenterAlignedTopAppBar(
                 title = { Text(text = stringResource(R.string.app_name)) },
                 actions = {
+                    IconButton(onClick = onCreateAgent) {
+                        Icon(Icons.Default.Add, contentDescription = "新建智能体")
+                    }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,

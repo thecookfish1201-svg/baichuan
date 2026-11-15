@@ -28,10 +28,8 @@ import androidx.navigation.navArgument
 import androidx.navigation.NavType
 import com.tongzhouweiji.baichuan.R
 import com.tongzhouweiji.baichuan.ui.screen.agent.AgentEditScreen
-import com.tongzhouweiji.baichuan.ui.screen.agentrun.AgentRunsScreen
 import com.tongzhouweiji.baichuan.ui.screen.agent.AgentListScreen
 import com.tongzhouweiji.baichuan.ui.screen.chat.ChatScreen
-import com.tongzhouweiji.baichuan.ui.screen.discover.DiscoverScreen
 import com.tongzhouweiji.baichuan.ui.screen.manage.ManageScreen
 import com.tongzhouweiji.baichuan.ui.screen.messages.MessagesScreen
 import com.tongzhouweiji.baichuan.ui.screen.profile.ProfileScreen
@@ -39,7 +37,6 @@ import com.tongzhouweiji.baichuan.ui.screen.error.ErrorEventsScreen
 import com.tongzhouweiji.baichuan.ui.screen.memory.MemoryScreen
 import com.tongzhouweiji.baichuan.ui.screen.aux.AuxModelScreen
 import com.tongzhouweiji.baichuan.ui.screen.backup.BackupScreen
-import com.tongzhouweiji.baichuan.ui.screen.mcp.McpScreen
 import com.tongzhouweiji.baichuan.ui.screen.plugin.PluginScreen
 import com.tongzhouweiji.baichuan.ui.screen.scheduled.ScheduledMessageScreen
 import com.tongzhouweiji.baichuan.ui.screen.search.SearchConfigScreen
@@ -49,7 +46,6 @@ import com.tongzhouweiji.baichuan.ui.screen.settings.ProviderEditScreen
 
 private const val ROUTE_MESSAGES = "messages"
 private const val ROUTE_MANAGE = "manage"
-private const val ROUTE_DISCOVER = "discover"
 private const val ROUTE_PROFILE = "profile"
 private const val ROUTE_CHAT = "chat"
 private const val ROUTE_AGENT_LIST = "agent_list"
@@ -64,10 +60,8 @@ private const val ROUTE_SEARCH_CONFIG = "search_config"
 private const val ROUTE_AUX_MODELS = "aux_models"
 private const val ROUTE_BACKUP = "backup"
 private const val ROUTE_PLUGINS = "plugins"
-private const val ROUTE_MCP = "mcp"
-private const val ROUTE_AGENT_RUNS = "agent_runs"
 
-private val mainRoutes = setOf(ROUTE_MESSAGES, ROUTE_MANAGE, ROUTE_DISCOVER, ROUTE_PROFILE)
+private val mainRoutes = setOf(ROUTE_MESSAGES, ROUTE_MANAGE, ROUTE_PROFILE)
 
 private data class Destination(
     val route: String,
@@ -78,7 +72,6 @@ private data class Destination(
 private val destinations = listOf(
     Destination(ROUTE_MESSAGES, R.drawable.ic_tab_chat, R.string.tab_messages),
     Destination(ROUTE_MANAGE, R.drawable.ic_tab_manage, R.string.tab_manage),
-    Destination(ROUTE_DISCOVER, R.drawable.ic_tab_discover, R.string.tab_discover),
     Destination(ROUTE_PROFILE, R.drawable.ic_tab_profile, R.string.tab_profile),
 )
 
@@ -147,10 +140,8 @@ fun BaichuanApp() {
                     onOpenAgents = { navController.navigate(ROUTE_AGENT_LIST) },
                     onOpenModelConfig = { navController.navigate(ROUTE_MODEL_CONFIG) },
                     onOpenPlugins = { navController.navigate(ROUTE_PLUGINS) },
-                    onOpenMcp = { navController.navigate(ROUTE_MCP) },
                 )
             }
-            composable(ROUTE_DISCOVER) { DiscoverScreen() }
             composable(ROUTE_PROFILE) {
                 ProfileScreen(
                     onOpenAppearance = { navController.navigate(ROUTE_APPEARANCE) },
@@ -158,7 +149,6 @@ fun BaichuanApp() {
                     onOpenSearch = { navController.navigate(ROUTE_SEARCH_CONFIG) },
                     onOpenAux = { navController.navigate(ROUTE_AUX_MODELS) },
                     onOpenBackup = { navController.navigate(ROUTE_BACKUP) },
-                    onOpenAgentRuns = { navController.navigate(ROUTE_AGENT_RUNS) },
                 )
             }
             composable(ROUTE_APPEARANCE) {
@@ -178,9 +168,6 @@ fun BaichuanApp() {
             }
             composable(ROUTE_PLUGINS) {
                 PluginScreen(onBack = { navController.popBackStack() })
-            }
-            composable(ROUTE_MCP) {
-                McpScreen(onBack = { navController.popBackStack() })
             }
             composable(
                 route = "scheduled/{agentId}",
@@ -213,9 +200,6 @@ fun BaichuanApp() {
                     onEdit = { agentId -> navController.navigate("$ROUTE_AGENT_EDIT/$agentId") },
                     onCreate = { navController.navigate("$ROUTE_AGENT_EDIT/0") },
                 )
-            }
-            composable(ROUTE_AGENT_RUNS) {
-                AgentRunsScreen(onBack = { navController.popBackStack() })
             }
             composable(
                 route = "$ROUTE_AGENT_EDIT/{agentId}",

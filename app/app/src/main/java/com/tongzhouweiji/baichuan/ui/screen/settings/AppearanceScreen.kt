@@ -23,6 +23,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,6 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.tongzhouweiji.baichuan.BaichuanApplication
 import com.tongzhouweiji.baichuan.core.db.entity.SettingEntity
+import com.tongzhouweiji.baichuan.core.tts.TtsAvailability
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -38,10 +40,18 @@ fun AppearanceScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val app = context.applicationContext as BaichuanApplication
     val scope = rememberCoroutineScope()
-    val style by app.container.settingDao.observe("ui_style").collectAsState(initial = "wechat")
     val themeMode by app.container.settingDao.observe("theme_mode").collectAsState(initial = "system")
     val ttsProvider by app.container.settingDao.observe("tts_provider").collectAsState(initial = "")
     val ttsVoice by app.container.settingDao.observe("tts_voice").collectAsState(initial = "stella")
+    val ttsAvailability by produceState(initialValue = TtsAvailability.Disabled, ttsProvider) {
+        value = app.container.ttsService.availability()
+    }
+    val ttsStatusText = when (ttsAvailability) {
+        TtsAvailability.Disabled -> "未开启，朗读使用系统 TTS"
+        TtsAvailability.NoProvider -> "未添加 DeepSeek 服务商，朗读将回退系统 TTS"
+        TtsAvailability.NoKey -> "DeepSeek API Key 未配置，朗读将回退系统 TTS"
+        TtsAvailability.Ready -> "已就绪：优先使用 DeepSeek 云端音色"
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -62,24 +72,6 @@ fun AppearanceScreen(onBack: () -> Unit) {
         },
     ) { innerPadding ->
         Column(Modifier.fillMaxSize().padding(innerPadding)) {
-            OptionRow(
-                title = "微信式",
-                subtitle = "头像、气泡与消息列表，默认",
-                selected = style != "deepseek",
-            ) {
-                scope.launch {
-                    app.container.settingDao.put(SettingEntity("ui_style", "wechat"))
-                }
-            }
-            OptionRow(
-                title = "DeepSeek 式",
-                subtitle = "不显示头像与名称，对话更简洁",
-                selected = style == "deepseek",
-            ) {
-                scope.launch {
-                    app.container.settingDao.put(SettingEntity("ui_style", "deepseek"))
-                }
-            }
             Spacer(Modifier.height(8.dp))
             Text(
                 text = "主题",
@@ -117,7 +109,7 @@ fun AppearanceScreen(onBack: () -> Unit) {
             )
             OptionRow(
                 title = "云端朗读（DeepSeek TTS）",
-                subtitle = "朗读优先使用云端音色，失败自动回退系统朗读",
+                subtitle = ttsStatusText,
                 selected = ttsProvider == "deepseek",
             ) {
                 scope.launch {
@@ -144,13 +136,6 @@ fun AppearanceScreen(onBack: () -> Unit) {
                     app.container.settingDao.put(SettingEntity("tts_voice", "tide"))
                 }
             }
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = "液态玻璃风格将在后续版本提供。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp),
-            )
         }
     }
 }

@@ -23,12 +23,14 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -40,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.tongzhouweiji.baichuan.BuildConfig
 import com.tongzhouweiji.baichuan.R
 import com.tongzhouweiji.baichuan.ui.component.ListRow
 
@@ -51,11 +54,11 @@ fun ProfileScreen(
     onOpenSearch: () -> Unit = {},
     onOpenAux: () -> Unit = {},
     onOpenBackup: () -> Unit = {},
-    onOpenAgentRuns: () -> Unit = {},
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val app = context.applicationContext as com.tongzhouweiji.baichuan.BaichuanApplication
     var statusLine by remember { mutableStateOf("本地数据 · 未配置模型") }
+    var showAbout by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         statusLine = runCatching {
             val providers = app.container.providerDao.listAll().size
@@ -91,14 +94,9 @@ fun ProfileScreen(
             ProfileHeader(statusLine)
             Spacer(Modifier.height(10.dp))
             ListRow(
-                icon = Icons.Default.Settings,
-                title = stringResource(R.string.profile_settings),
-                subtitle = "模型、存储与通用设置",
-            )
-            ListRow(
                 icon = Icons.Default.Star,
                 title = stringResource(R.string.profile_appearance),
-                subtitle = "微信式 / DeepSeek 式与深色模式",
+                subtitle = "主题与朗读",
                 onClick = onOpenAppearance,
             )
             ListRow(
@@ -112,12 +110,6 @@ fun ProfileScreen(
                 title = "辅助模型",
                 subtitle = "上下文压缩使用独立模型",
                 onClick = onOpenAux,
-            )
-            ListRow(
-                icon = Icons.Default.Build,
-                title = "Agent 运行记录",
-                subtitle = "授权智能体的任务与工具调用轨迹",
-                onClick = onOpenAgentRuns,
             )
             ListRow(
                 icon = Icons.Default.Warning,
@@ -136,6 +128,7 @@ fun ProfileScreen(
                 title = stringResource(R.string.profile_about),
                 subtitle = "开源协议与版本信息",
                 showDivider = false,
+                onClick = { showAbout = true },
             )
             Spacer(Modifier.height(28.dp))
             Text(
@@ -146,6 +139,42 @@ fun ProfileScreen(
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
         }
+    }
+
+    if (showAbout) {
+        AlertDialog(
+            onDismissRequest = { showAbout = false },
+            title = { Text("关于百川") },
+            text = {
+                Column {
+                    Text("版本 ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(8.dp))
+                    Text("本地优先的个人 AI 对话工作台。", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text("开源协议：MIT", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "项目地址：github.com/thecookfish1201-svg/baichuan",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    runCatching {
+                        context.startActivity(
+                            android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse("https://github.com/thecookfish1201-svg/baichuan"),
+                            ),
+                        )
+                    }
+                    showAbout = false
+                }) { Text("打开项目主页") }
+            },
+            dismissButton = { TextButton(onClick = { showAbout = false }) { Text("关闭") } },
+        )
     }
 }
 

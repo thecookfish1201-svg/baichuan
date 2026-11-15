@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import com.tongzhouweiji.baichuan.core.db.entity.SettingEntity
 import com.tongzhouweiji.baichuan.ui.BaichuanApp
 import com.tongzhouweiji.baichuan.ui.theme.BaichuanTheme
 
@@ -40,10 +41,23 @@ class MainActivity : ComponentActivity() {
                         onRetry = { recreate() },
                     )
                 } else {
+                    LaunchedEffect(Unit) { migrateLegacyUiStyle(app) }
                     NotificationPermissionRequester()
                     BaichuanApp()
                 }
             }
+        }
+    }
+}
+
+/**
+ * v0.4.0 起只保留微信式聊天布局。旧版本选择过 DeepSeek 式 UI 的用户，
+ * 升级后幂等迁移为 wechat，避免进入已删除的页面或白屏。
+ */
+private suspend fun migrateLegacyUiStyle(app: BaichuanApplication) {
+    runCatching {
+        if (app.container.settingDao.get("ui_style") == "deepseek") {
+            app.container.settingDao.put(SettingEntity("ui_style", "wechat"))
         }
     }
 }

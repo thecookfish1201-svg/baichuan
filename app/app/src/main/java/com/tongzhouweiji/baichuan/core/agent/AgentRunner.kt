@@ -32,6 +32,10 @@ class AgentRunner(private val db: BaichuanDatabase) {
         history: List<ChatMessage> = emptyList(),
         onActivity: (suspend (String) -> Unit)? = null,
     ): RunResult {
+        // v0.4.0 暂停 Agent 执行：即使旧授权记录仍在，也不能启动工具调用。
+        if (!com.tongzhouweiji.baichuan.core.AppFeatureFlags.agentExecutionEnabled) {
+            throw IllegalStateException("Agent 执行已在当前版本暂停")
+        }
         val consent = db.agentRunDao().findConsent(agentId)
             ?: throw IllegalStateException("该智能体未获得 Agent 授权")
         val tools = AgentToolRegistry.definitions()

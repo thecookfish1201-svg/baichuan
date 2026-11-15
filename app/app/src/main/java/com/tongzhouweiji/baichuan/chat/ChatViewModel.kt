@@ -81,8 +81,6 @@ data class ChatUiState(
     val paramNotice: String? = null,
     val modelLabel: String? = null,
     val sessionSearch: Boolean = false,
-    /** 显式开启的 Agent 模式；未授权或未开启时走普通聊天。 */
-    val agentMode: Boolean = false,
     /** 输入区状态机，唯一的任务状态事实源。 */
     val composerState: ComposerState = ComposerState.IDLE,
 ) {
@@ -116,7 +114,6 @@ class ChatViewModel(
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     private var streamJob: Job? = null
-    private var agentJob: Job? = null
     private var prepareJob: Job? = null
     private val lastUiUpdate = AtomicLong(0)
     private val json = Json { ignoreUnknownKeys = true }
@@ -373,7 +370,6 @@ class ChatViewModel(
         _state.update { it.copy(composerState = ComposerState.STOP_REQUESTED) }
         prepareJob?.cancel()
         streamJob?.cancel()
-        agentJob?.cancel()
     }
 
     /** 清除一次性错误（Snackbar 展示后调用）。 */
@@ -439,20 +435,6 @@ class ChatViewModel(
         }
     }
 
-    /** 切换 Agent 模式：仅授权的智能体可用；关闭后恢复普通聊天。 */
-    fun toggleAgentMode() {
-        val agent = _state.value.agent ?: return
-        viewModelScope.launch {
-            val authorized = app.container.agentManager.isAuthorized(agent.id)
-            if (!authorized) {
-                _state.update { it.copy(globalError = "该智能体未获得 Agent 授权，请先在智能体设置中授予") }
-                return@launch
-            }
-            val next = !_state.value.agentMode
-            _state.update { it.copy(agentMode = next) }
-        }
-    }
-
     private suspend fun loadSearchConfig(): com.tongzhouweiji.baichuan.core.search.SearchManager.SearchConfig? {
         val mode = app.container.settingDao.get("search_mode") ?: "deepseek"
         if (mode == "deepseek") {
@@ -496,14 +478,6 @@ class ChatViewModel(
         val path = repository.pathTo(conversationId, contextLeafId)
         if (!path.valid) {
             failGeneration(PromptAssembler.INVALID_PATH_MESSAGE)
-            return
-        }
-        if (app.container.featureFlags.agentExecutionEnabled &&
-            _state.value.agentMode &&
-            app.container.agentManager.isAuthorized(agent.id)
-        ) {
-            // 独立 Job：停止按钮可以取消 Agent 任务。
-            agentJob = viewModelScope.launch { runAgent(conversationId, agent, path.messages) }
             return
         }
         val resolved = resolveModel(agent)
@@ -809,84 +783,6 @@ class ChatViewModel(
 
     private fun latestUserText(path: List<MessageEntity>): String =
         path.lastOrNull { it.role == "user" }?.content.orEmpty()
-
-    /**
-     * Agent 闭环：模型自主决定是否调用工具，百川真实执行并把结果回传模型，
-     * 直到模型给出最终回复。非流式，界面显示调用状态。
-     *
-     * v0.4.0 默认关闭（AppFeatureFlags.agentExecutionEnabled=false），普通用户
-     * 没有任何 UI 入口可以触发；保留代码与旧数据兼容，未来评估后再开放。
-     */
-    private suspend fun runAgent(
-        conversationId: Long,
-        agent: AgentEntity,
-        contextPath: List<MessageEntity>,
-    ) {
-        val resolved = resolveModel(agent)
-        if (resolved == null) {
-            failGeneration("未配置模型，无法使用 Agent")
-            return
-        }
-        val (config, modelName) = resolved
-        val userText = contextPath.lastOrNull { it.role == "user" }?.content.orEmpty()
-        if (userText.isBlank()) {
-            failGeneration("当前对话没有可执行的用户消息")
-            return
-        }
-        val systemPrompt = buildString {
-            if (agent.systemPrompt.isNotBlank()) append(agent.systemPrompt).append("\n\n")
-            if (agent.persona.isNotBlank()) append("人设：").append(agent.persona)
-        }
-        val history = contextPath.dropLast(1)
-            .filter { it.role == "user" || it.role == "assistant" }
-            .map { ChatMessage(role = it.role, content = it.content) }
-        val placeholder = repository.appendAssistantPlaceholder(conversationId, contextPath.lastOrNull()?.id)
-        beginStreaming(placeholder.id)
-        _state.update { it.copy(streamingContent = "正在调用工具…") }
-        refreshPath()
-        try {
-            val result = app.container.agentRunner.run(
-                agentId = agent.id,
-                goal = userText,
-                systemPrompt = systemPrompt,
-                config = config,
-                modelName = modelName,
-                history = history,
-                onActivity = { text ->
-                    _state.update { it.copy(streamingContent = text) }
-                },
-            )
-            val text = result.text.ifBlank { "（Agent 已完成，但没有返回文本内容）" }
-            repository.finishMessage(placeholder.id, "done", text)
-            _state.update { it.copy(streamingContent = text, streamingMessageId = null, composerState = ComposerState.COMPLETED) }
-        } catch (e: CancellationException) {
-            repository.finishMessage(placeholder.id, "cancelled", "", "已停止")
-            _state.update {
-                it.copy(
-                    streamingMessageId = null,
-                    composerState = ComposerState.CANCELLED,
-                )
-            }
-            throw e
-        } catch (e: Exception) {
-            Logger.e("agent run failed", e)
-            errorEventDao.insert(
-                ErrorEventEntity(
-                    agentId = agent.id,
-                    conversationId = conversationId,
-                    messageId = placeholder.id,
-                    code = "agent_failed",
-                    summary = "Agent 执行失败，请稍后重试",
-                    detail = Logger.redact(e.stackTraceToString().take(4000)),
-                    createdAt = System.currentTimeMillis(),
-                ),
-            )
-            repository.finishMessage(placeholder.id, "failed", "", "Agent 执行失败，请稍后重试")
-            failGeneration("Agent 执行失败，请稍后重试")
-        } finally {
-            withContext(NonCancellable) { refreshPath() }
-        }
-    }
 
     /**
      * 上下文压缩：未压缩消息超过 30 条时，用当前模型对最早 20 条生成摘要，

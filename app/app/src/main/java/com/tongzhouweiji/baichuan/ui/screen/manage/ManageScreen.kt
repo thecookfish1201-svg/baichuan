@@ -35,7 +35,6 @@ fun ManageScreen(
     onOpenAgents: () -> Unit = {},
     onOpenModelConfig: () -> Unit = {},
     onOpenPlugins: () -> Unit = {},
-    onOpenMcp: () -> Unit = {},
 ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -63,12 +62,6 @@ fun ManageScreen(
                 subtitle = "创建、编辑与权限配置",
                 onClick = onOpenAgents,
             )
-            ListRow(
-                icon = Icons.Default.Warning,
-                title = stringResource(R.string.manage_blocklist),
-                subtitle = "已拉黑的智能体",
-                showDivider = false,
-            )
             GroupGap()
             ListRow(
                 icon = Icons.Default.Build,
@@ -76,23 +69,11 @@ fun ManageScreen(
                 subtitle = "未济接口插件管理",
                 onClick = onOpenPlugins,
             )
-            ListRow(
-                icon = Icons.Default.AccountCircle,
-                title = stringResource(R.string.manage_mcp),
-                subtitle = "外部工具与服务连接",
-                onClick = onOpenMcp,
-            )
-            ListRow(
-                icon = Icons.Default.Lock,
-                title = stringResource(R.string.manage_permissions),
-                subtitle = "插件与 Agent 的授权记录",
-                showDivider = false,
-            )
             GroupGap()
             ListRow(
                 icon = Icons.Default.Settings,
-                title = stringResource(R.string.manage_settings),
-                subtitle = "模型、存储与通用设置",
+                title = "模型与服务商",
+                subtitle = "添加服务商、选择默认模型",
                 showDivider = false,
                 onClick = onOpenModelConfig,
             )
