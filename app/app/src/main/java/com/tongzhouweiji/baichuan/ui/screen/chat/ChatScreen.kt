@@ -115,6 +115,7 @@ fun ChatScreen(
     val listState = rememberLazyListState()
 
     var agentAuthorized by remember { mutableStateOf(false) }
+    var pendingDeleteId by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(agentId) {
         agentAuthorized = app.container.agentManager.isAuthorized(agentId)
     }
@@ -185,13 +186,40 @@ fun ChatScreen(
             agentAuthorized = agentAuthorized,
             agentMode = state.agentMode,
             onToggleAgentMode = viewModel::toggleAgentMode,
+            onClearError = viewModel::clearError,
+            onDelete = { pendingDeleteId = it },
         )
+        pendingDeleteId?.let { id ->
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { pendingDeleteId = null },
+                title = { androidx.compose.material3.Text("删除消息") },
+                text = { androidx.compose.material3.Text("删除后该消息及其分支将无法恢复，确定删除？") },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        viewModel.deleteMessage(id)
+                        pendingDeleteId = null
+                    }) { androidx.compose.material3.Text("删除", color = MaterialTheme.colorScheme.error) }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { pendingDeleteId = null }) {
+                        androidx.compose.material3.Text("取消")
+                    }
+                },
+            )
+        }
         return
     }
 
+    val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+    LaunchedEffect(state.globalError) {
+        val message = state.globalError ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message)
+        viewModel.clearError()
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets(0),
+        snackbarHost = { androidx.compose.material3.SnackbarHost(snackbarHostState) },
         topBar = {
             CenterAlignedTopAppBar(
                 title = { Text(state.agent?.name ?: "对话") },
@@ -262,7 +290,7 @@ fun ChatScreen(
                         branch = state.branchInfo[message.id],
                         onRegenerate = { viewModel.regenerate(message.id) },
                         onEdit = { viewModel.editAndResend(message.id, it) },
-                        onDelete = { viewModel.deleteMessage(message.id) },
+                        onDelete = { pendingDeleteId = message.id },
                         onSpeak = {
                             scope.launch {
                                 val played = runCatching {
@@ -567,7 +595,7 @@ private fun ChatInputBar(
                 value = input,
                 onValueChange = onInputChange,
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("发消息或按住说话") },
+                placeholder = { Text("发消息") },
                 shape = RoundedCornerShape(22.dp),
                 maxLines = 4,
                 colors = TextFieldDefaults.colors(

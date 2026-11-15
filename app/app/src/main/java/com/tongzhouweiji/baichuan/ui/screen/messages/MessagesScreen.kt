@@ -61,9 +61,6 @@ fun MessagesScreen(
             CenterAlignedTopAppBar(
                 title = { Text(text = stringResource(R.string.app_name)) },
                 actions = {
-                    IconButton(onClick = { /* 阶段二后续：搜索 */ }) {
-                        Icon(Icons.Default.Search, contentDescription = stringResource(R.string.action_search))
-                    }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,

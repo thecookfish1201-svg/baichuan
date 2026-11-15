@@ -8,6 +8,8 @@ import androidx.compose.ui.graphics.Color
  */
 val BaichuanBlue = Color(0xFF2F5BEA)
 val BaichuanBlueDark = Color(0xFF2549C8)
+/** 深色主题专用川蓝（视觉规范 brand.dark） */
+val BaichuanBlueOnDark = Color(0xFF7C93FF)
 val ChatGreen = Color(0xFF07C160)
 
 val LightBackground = Color(0xFFEDEDED)
@@ -17,21 +19,21 @@ val LightOnSurface = Color(0xFF1A1A1A)
 val LightOnSurfaceVariant = Color(0xFF8A8A8A)
 val LightOutline = Color(0xFFE5E5E5)
 
-val DarkBackground = Color(0xFF111111)
-val DarkSurface = Color(0xFF191919)
-val DarkSurfaceVariant = Color(0xFF222222)
+val DarkBackground = Color(0xFF0F1115)
+val DarkSurface = Color(0xFF191C22)
+val DarkSurfaceVariant = Color(0xFF22262E)
 val DarkOnSurface = Color(0xFFE5E5E5)
 val DarkOnSurfaceVariant = Color(0xFF9AA1AE)
-val DarkOutline = Color(0xFF2A2A2A)
+val DarkOutline = Color(0xFF262A31)
 
 val DangerRed = Color(0xFFFA5151)
 val NoticeBlue = Color(0xFF576B95)
 
 // DeepSeek 风格 token（对照官方 APP）
-val DSUserBubbleLight = Color(0xFFE8EEFB)
-val DSUserBubbleDark = Color(0xFF2A2A2A)
+val DSUserBubbleLight = Color(0xFFF2F3F5)
+val DSUserBubbleDark = Color(0xFF26282C)
 val DSReasoningGray = Color(0xFF9A9A9A)
-val DSLine = Color(0xFFE5E5E5)
-val DSLineDark = Color(0xFF333333)
+val DSLine = Color(0xFFE5E7EB)
+val DSLineDark = Color(0xFF262A31)
 val DSPillBg = Color(0xFFEDF2FF)
 val DSPillText = Color(0xFF4D6BFE)

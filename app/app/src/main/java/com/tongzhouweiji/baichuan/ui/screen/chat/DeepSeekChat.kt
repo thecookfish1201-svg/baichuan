@@ -28,6 +28,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
@@ -94,6 +96,7 @@ fun DeepSeekChat(
     onPickFile: () -> Unit,
     onRemoveAttachment: (Int) -> Unit,
     onRegenerate: (Long) -> Unit,
+    onDelete: (Long) -> Unit = {},
     onCopy: (String) -> Unit,
     onSpeak: (String) -> Unit,
     onToggleDeepThinking: () -> Unit,
@@ -102,10 +105,17 @@ fun DeepSeekChat(
     agentAuthorized: Boolean = false,
     agentMode: Boolean = false,
     onToggleAgentMode: () -> Unit = {},
+    onClearError: () -> Unit = {},
 ) {
     val dark = isSystemInDarkTheme()
     val context = androidx.compose.ui.platform.LocalContext.current
     val listState = rememberLazyListState()
+    val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+    LaunchedEffect(state.globalError) {
+        val message = state.globalError ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message)
+        onClearError()
+    }
 
     // 仅当用户接近底部时跟随流式内容；上滑阅读时不打断。
     val nearBottom by remember {
@@ -213,6 +223,7 @@ fun DeepSeekChat(
                             streaming = streaming,
                             dark = dark,
                             onRegenerate = { onRegenerate(message.id) },
+                            onDelete = { onDelete(message.id) },
                             onCopy = { onCopy(message.content) },
                             onSpeak = { onSpeak(message.content) },
                         )
@@ -272,6 +283,7 @@ private fun DsMessageItem(
     streaming: Boolean,
     dark: Boolean,
     onRegenerate: () -> Unit,
+    onDelete: () -> Unit = {},
     onCopy: () -> Unit,
     onSpeak: () -> Unit,
 ) {
@@ -340,11 +352,45 @@ private fun DsMessageItem(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Row {
-                    TextButton(onClick = onCopy, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-                        Text("复制", style = MaterialTheme.typography.labelSmall)
+                    var menuOpen by remember { mutableStateOf(false) }
+                    IconButton(
+                        onClick = onRegenerate,
+                        modifier = Modifier.size(40.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "重新生成",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                    TextButton(onClick = onSpeak, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-                        Text("朗读", style = MaterialTheme.typography.labelSmall)
+                    Box {
+                        IconButton(
+                            onClick = { menuOpen = true },
+                            modifier = Modifier.size(40.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "更多操作",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        androidx.compose.material3.DropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false },
+                        ) {
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("复制") },
+                                onClick = { menuOpen = false; onCopy() },
+                            )
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("朗读") },
+                                onClick = { menuOpen = false; onSpeak() },
+                            )
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                                onClick = { menuOpen = false; onDelete() },
+                            )
+                        }
                     }
                 }
                 TextButton(onClick = onRegenerate, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
@@ -492,7 +538,7 @@ private fun DsInputCard(
                     value = input,
                     onValueChange = onInputChange,
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("发消息或按住说话", style = MaterialTheme.typography.bodyMedium) },
+                    placeholder = { Text("发消息", style = MaterialTheme.typography.bodyMedium) },
                     maxLines = 5,
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = Color.Transparent,

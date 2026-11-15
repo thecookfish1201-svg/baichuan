@@ -10,6 +10,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
@@ -23,7 +25,15 @@ class MainActivity : ComponentActivity() {
         val app = application as BaichuanApplication
         val databaseFailure = runCatching { app.container.database }.exceptionOrNull()
         setContent {
-            BaichuanTheme {
+            val themeMode by app.container.settingDao
+                .observe("theme_mode")
+                .collectAsState(initial = "system")
+            val darkTheme = when (themeMode) {
+                "light" -> false
+                "dark" -> true
+                else -> androidx.compose.foundation.isSystemInDarkTheme()
+            }
+            BaichuanTheme(darkTheme = darkTheme) {
                 if (databaseFailure != null) {
                     com.tongzhouweiji.baichuan.ui.screen.recovery.DatabaseRecoveryScreen(
                         error = databaseFailure.message,

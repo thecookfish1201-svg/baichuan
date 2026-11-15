@@ -81,6 +81,11 @@ class AttachmentStore(private val context: Context) {
         )
     }.getOrNull()
 
+    /** 删除已保存的附件（用于发送失败时清理孤儿文件）。 */
+    fun delete(relativePath: String) {
+        runCatching { resolve(relativePath).delete() }
+    }
+
     fun readBase64(relativePath: String): String? = runCatching {
         val file = resolve(relativePath)
         if (!file.exists()) return null

@@ -110,6 +110,7 @@ class ChatViewModel(
 
     private var streamJob: Job? = null
     private var agentJob: Job? = null
+    private var prepareJob: Job? = null
     private val lastUiUpdate = AtomicLong(0)
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -184,25 +185,33 @@ class ChatViewModel(
         val text = _state.value.input.trim()
         val pending = _state.value.pendingAttachments
         if (text.isEmpty() && pending.isEmpty()) return
-        if (_state.value.isStreaming) return
         val conversationId = _state.value.conversationId
         if (conversationId == 0L) return
-        viewModelScope.launch {
-            _state.update { it.copy(composerState = ComposerState.PREPARING) }
-            val conversation = conversationDao.findById(conversationId) ?: run {
-                _state.update { it.copy(composerState = ComposerState.IDLE) }
-                _state.update { it.copy(globalError = "会话不存在，发送失败") }
+        // 防重入：PREPARING / STREAMING / STOP_REQUESTED 期间不再接受新的发送。
+        if (!canStartGeneration()) return
+        prepareJob = viewModelScope.launch {
+            _state.update { it.copy(composerState = ComposerState.PREPARING, globalError = null) }
+            val conversation = conversationDao.findById(conversationId)
+            if (conversation == null) {
+                failGeneration("会话不存在，发送失败")
                 return@launch
             }
             val parentId = conversation.activeLeafMessageId
-            val stored = withContext(Dispatchers.IO) {
-                pending.mapNotNull { p ->
-                    if (p.type == "image") attachmentStore.storeImage(p.uri, conversationId)
-                    else attachmentStore.storeFile(p.uri, conversationId)
+            val stored = mutableListOf<com.tongzhouweiji.baichuan.core.media.StoredAttachment>()
+            var attachmentFailed = false
+            withContext(Dispatchers.IO) {
+                pending.forEach { p ->
+                    val result = if (p.type == "image") {
+                        attachmentStore.storeImage(p.uri, conversationId)
+                    } else {
+                        attachmentStore.storeFile(p.uri, conversationId)
+                    }
+                    if (result == null) attachmentFailed = true else stored.add(result)
                 }
             }
-            if (stored.size != pending.size) {
-                _state.update { it.copy(globalError = "附件保存失败，请重试或移除附件") }
+            if (attachmentFailed) {
+                stored.forEach { attachmentStore.delete(it.relativePath) }
+                failGeneration("附件保存失败，草稿已保留，请重试或移除附件")
                 return@launch
             }
             // 先持久化用户消息，成功后再清空输入，避免发送失败时丢失草稿。
@@ -215,17 +224,23 @@ class ChatViewModel(
                     attachments = stored,
                 )
             } catch (e: Exception) {
-                _state.update { it.copy(globalError = "发送失败：${e.message}") }
+                stored.forEach { attachmentStore.delete(it.relativePath) }
+                failGeneration("发送失败：${e.message}")
                 return@launch
             }
-            _state.update { it.copy(input = "", pendingAttachments = emptyList()) }
-            _state.update { it.copy(composerState = ComposerState.STREAMING) }
+            _state.update {
+                it.copy(
+                    input = "",
+                    pendingAttachments = emptyList(),
+                    composerState = ComposerState.STREAMING,
+                )
+            }
             generate(conversationId, userMessage.id)
         }
     }
 
     fun regenerate(messageId: Long) {
-        if (_state.value.isStreaming) return
+        if (!canStartGeneration()) return
         val conversationId = _state.value.conversationId
         viewModelScope.launch {
             val message = repository.findMessage(messageId) ?: return@launch
@@ -234,7 +249,7 @@ class ChatViewModel(
     }
 
     fun editAndResend(messageId: Long, newText: String) {
-        if (_state.value.isStreaming) return
+        if (!canStartGeneration()) return
         val text = newText.trim()
         if (text.isEmpty()) return
         val conversationId = _state.value.conversationId
@@ -279,9 +294,39 @@ class ChatViewModel(
     }
 
     fun stopGenerating() {
+        val active = _state.value.composerState in setOf(
+            ComposerState.PREPARING,
+            ComposerState.STREAMING,
+            ComposerState.STOP_REQUESTED,
+        )
+        if (!active) return
         _state.update { it.copy(composerState = ComposerState.STOP_REQUESTED) }
+        prepareJob?.cancel()
         streamJob?.cancel()
         agentJob?.cancel()
+    }
+
+    /** 清除一次性错误（Snackbar 展示后调用）。 */
+    fun clearError() {
+        _state.update { it.copy(globalError = null) }
+    }
+
+    /** 当前是否允许发起新的生成任务。 */
+    private fun canStartGeneration(): Boolean = when (_state.value.composerState) {
+        ComposerState.IDLE, ComposerState.COMPLETED, ComposerState.FAILED, ComposerState.CANCELLED -> true
+        else -> false
+    }
+
+    /** 早退/失败统一进入终态，并保留草稿。 */
+    private fun failGeneration(message: String) {
+        _state.update {
+            it.copy(
+                composerState = ComposerState.FAILED,
+                isStreaming = false,
+                streamingMessageId = null,
+                globalError = message,
+            )
+        }
     }
 
     /** 会话级联网搜索开关。未配置搜索服务时给出提示。 */
@@ -423,7 +468,7 @@ class ChatViewModel(
                 "",
                 "未配置模型：请先在「管理 → 相关配置」添加服务商并选择模型",
             )
-            _state.update { it.copy(isStreaming = false, streamingMessageId = null) }
+            failGeneration("未配置模型：请先在「管理 → 相关配置」添加服务商并选择模型")
             refreshPath()
             return
         }
@@ -661,12 +706,20 @@ class ChatViewModel(
             val text = result.text.ifBlank { "（Agent 已完成，但没有返回文本内容）" }
             repository.finishMessage(placeholder.id, "done", text)
             _state.update { it.copy(streamingContent = text, isStreaming = false, streamingMessageId = null) }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            repository.finishMessage(placeholder.id, "cancelled", "", "已停止")
+            _state.update {
+                it.copy(
+                    isStreaming = false,
+                    streamingMessageId = null,
+                    composerState = ComposerState.CANCELLED,
+                )
+            }
+            throw e
         } catch (e: Exception) {
             Logger.e("agent run failed", e)
             repository.finishMessage(placeholder.id, "failed", "", e.message ?: "Agent 执行失败")
-            _state.update {
-                it.copy(isStreaming = false, streamingMessageId = null, globalError = e.message ?: "Agent 执行失败")
-            }
+            failGeneration(e.message ?: "Agent 执行失败")
         } finally {
             withContext(NonCancellable) { refreshPath() }
         }

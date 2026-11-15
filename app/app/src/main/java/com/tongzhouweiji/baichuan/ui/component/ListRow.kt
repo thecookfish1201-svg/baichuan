@@ -36,9 +36,15 @@ fun ListRow(
     showArrow: Boolean = true,
     showDivider: Boolean = true,
     iconTint: Color = Color.Unspecified,
-    onClick: () -> Unit = {},
+    onClick: (() -> Unit)? = null,
 ) {
-    Column(modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).clickable(onClick = onClick)) {
+    val clickModifier = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
+    Column(
+        modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .then(clickModifier),
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -71,7 +77,7 @@ fun ListRow(
                     )
                 }
             }
-            if (showArrow) {
+            if (showArrow && onClick != null) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = null,

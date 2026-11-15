@@ -39,6 +39,7 @@ fun AppearanceScreen(onBack: () -> Unit) {
     val app = context.applicationContext as BaichuanApplication
     val scope = rememberCoroutineScope()
     val style by app.container.settingDao.observe("ui_style").collectAsState(initial = "wechat")
+    val themeMode by app.container.settingDao.observe("theme_mode").collectAsState(initial = "system")
     val ttsProvider by app.container.settingDao.observe("tts_provider").collectAsState(initial = "")
     val ttsVoice by app.container.settingDao.observe("tts_voice").collectAsState(initial = "stella")
 
@@ -78,6 +79,34 @@ fun AppearanceScreen(onBack: () -> Unit) {
                 scope.launch {
                     app.container.settingDao.put(SettingEntity("ui_style", "deepseek"))
                 }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "主题",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            OptionRow(
+                title = "跟随系统",
+                subtitle = "浅色或深色随系统设置切换",
+                selected = themeMode == "system",
+            ) {
+                scope.launch { app.container.settingDao.put(SettingEntity("theme_mode", "system")) }
+            }
+            OptionRow(
+                title = "浅色",
+                subtitle = "始终使用浅色主题",
+                selected = themeMode == "light",
+            ) {
+                scope.launch { app.container.settingDao.put(SettingEntity("theme_mode", "light")) }
+            }
+            OptionRow(
+                title = "深色",
+                subtitle = "始终使用深色主题",
+                selected = themeMode == "dark",
+            ) {
+                scope.launch { app.container.settingDao.put(SettingEntity("theme_mode", "dark")) }
             }
             Spacer(Modifier.height(8.dp))
             Text(

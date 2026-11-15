@@ -26,7 +26,7 @@ private val LightColors = lightColorScheme(
 )
 
 private val DarkColors = darkColorScheme(
-    primary = BaichuanBlue,
+    primary = BaichuanBlueOnDark,
     onPrimary = Color.White,
     primaryContainer = BaichuanBlue.copy(alpha = 0.20f),
     onPrimaryContainer = Color.White,
