@@ -24,11 +24,14 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -56,11 +59,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.minimumInteractiveComponentSize
 import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
@@ -139,7 +144,12 @@ fun ChatScreen(
         }
     }
     LaunchedEffect(state.activePath.size) {
-        if (state.activePath.isNotEmpty()) {
+        // 用户主动上滑阅读时不强制拉回；发送/重新生成等新任务开始时跟随到底部。
+        val following = nearBottom || state.composerState in setOf(
+            ComposerState.PREPARING,
+            ComposerState.STREAMING,
+        )
+        if (following && state.activePath.isNotEmpty()) {
             listState.animateScrollToItem(state.activePath.lastIndex)
         }
     }
@@ -185,6 +195,10 @@ fun ChatScreen(
                 composerState = state.composerState,
                 notice = state.paramNotice,
                 onDismissNotice = viewModel::clearParamNotice,
+                searchEnabled = state.sessionSearch,
+                reasoningEnabled = state.sessionReasoning?.isThinking == true,
+                onToggleSearch = viewModel::toggleSearch,
+                onToggleReasoning = viewModel::toggleDeepThinking,
                 onInputChange = viewModel::updateInput,
                 onSend = viewModel::send,
                 onStop = viewModel::stopGenerating,
@@ -264,6 +278,22 @@ fun ChatScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     } }
+                }
+            }
+            if (!nearBottom && state.activePath.isNotEmpty()) {
+                SmallFloatingActionButton(
+                    onClick = {
+                        scope.launch {
+                            listState.animateScrollToItem(state.activePath.lastIndex)
+                        }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp),
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                ) {
+                    Icon(Icons.Default.KeyboardArrowDown, contentDescription = "回到最新")
                 }
             }
         }
@@ -350,6 +380,16 @@ private fun MessageItem(
                                 lineHeight = 26,
                                 color = if (isUser) Color.White
                                 else MaterialTheme.colorScheme.onSurface,
+                                onUrlClick = { url ->
+                                    runCatching {
+                                        context.startActivity(
+                                            android.content.Intent(
+                                                android.content.Intent.ACTION_VIEW,
+                                                android.net.Uri.parse(url),
+                                            ),
+                                        )
+                                    }
+                                },
                             )
                         }
                     }
@@ -360,6 +400,18 @@ private fun MessageItem(
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         clipboard.setPrimaryClip(ClipData.newPlainText("message", message.content))
                         Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                    })
+                    DropdownMenuItem(text = { Text("分享") }, onClick = {
+                        menuExpanded = false
+                        runCatching {
+                            val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(android.content.Intent.EXTRA_TEXT, message.content)
+                            }
+                            context.startActivity(
+                                android.content.Intent.createChooser(intent, "分享消息"),
+                            )
+                        }
                     })
                     if (isUser) {
                         DropdownMenuItem(text = { Text("编辑并重发") }, onClick = {
@@ -398,29 +450,35 @@ private fun MessageItem(
             }
             if (branch != null) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-                    Text(
-                        text = "‹",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Box(
                         modifier = Modifier
-                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(4.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                            .combinedClickable(onClick = { onCycleBranch(-1) }, onLongClick = {}),
-                    )
+                            .minimumInteractiveComponentSize()
+                            .clickable { onCycleBranch(-1) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "‹",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Text(
                         text = " ${branch.index}/${branch.total} ",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text(
-                        text = "›",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Box(
                         modifier = Modifier
-                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(4.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                            .combinedClickable(onClick = { onCycleBranch(1) }, onLongClick = {}),
-                    )
+                            .minimumInteractiveComponentSize()
+                            .clickable { onCycleBranch(1) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "›",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
@@ -485,6 +543,10 @@ private fun ChatInputBar(
     composerState: ComposerState,
     notice: String?,
     onDismissNotice: () -> Unit,
+    searchEnabled: Boolean,
+    reasoningEnabled: Boolean,
+    onToggleSearch: () -> Unit,
+    onToggleReasoning: () -> Unit,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -520,8 +582,30 @@ private fun ChatInputBar(
                 }
             }
         }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(bottom = 6.dp),
+        ) {
+            CapabilityChip(
+                icon = Icons.Default.Search,
+                label = if (searchEnabled) "联网搜索已开启" else "联网搜索",
+                active = searchEnabled,
+                onClick = onToggleSearch,
+            )
+            CapabilityChip(
+                icon = Icons.Default.Star,
+                label = if (reasoningEnabled) "深度思考已开启" else "深度思考",
+                active = reasoningEnabled,
+                onClick = onToggleReasoning,
+            )
+        }
         if (pending.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 6.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(bottom = 6.dp),
+            ) {
                 pending.forEachIndexed { index, attachment ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -536,8 +620,11 @@ private fun ChatInputBar(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.widthIn(max = 120.dp),
                         )
-                        IconButton(onClick = { onRemoveAttachment(index) }, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "移除", modifier = Modifier.size(14.dp))
+                        IconButton(
+                            onClick = { onRemoveAttachment(index) },
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "移除", modifier = Modifier.size(16.dp))
                         }
                     }
                 }
@@ -601,6 +688,40 @@ private fun ChatInputBar(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CapabilityChip(
+    icon: ImageVector,
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    val background = if (active) MaterialTheme.colorScheme.primaryContainer
+    else MaterialTheme.colorScheme.surfaceVariant
+    val content = if (active) MaterialTheme.colorScheme.primary
+    else MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        modifier = Modifier
+            .minimumInteractiveComponentSize()
+            .background(background, RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = content,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = content,
+        )
     }
 }
 
